@@ -7,11 +7,14 @@ characteristics.
 ## Project structure
 
 - `src/brainwave_dataset.py` &ndash; Dataset utilities for loading EEG recordings stored as
-  8&times;3200 tensors (`.npy` files) alongside Processing parameter metadata.
+  8&times;3200 tensors (`.npy` files) and deriving Processing parameters from paired
+  artwork images.
 - `src/model.py` &ndash; Neural network modules that encode the temporal signals and regress
   Processing-ready descriptors.
 - `src/train.py` &ndash; Command-line training entry point that ties the dataset and model
   together.
+- `src/processing_features.py` &ndash; Image analysis helpers that convert artwork texture
+  and colour statistics into Processing-friendly parameter vectors.
 
 ## Preparing the dataset
 
@@ -19,41 +22,36 @@ Organise the data with the following layout:
 
 ```
 dataset_root/
-├── metadata.json
-└── brainwaves/
-    ├── sample_0001.npy
-    ├── sample_0002.npy
+├── brainwaves/
+│   ├── sample_0001.npy
+│   ├── sample_0002.npy
+│   └── ...
+└── artworks/
+    ├── sample_0001.jpg
+    ├── sample_0002.jpg
     └── ...
 ```
 
 - Each `brainwaves/*.npy` file must contain an `8 × T` floating-point array, where `T`
   is the number of samples captured at 640 Hz (3200 for a five-second recording).
-- `metadata.json` is a dictionary mapping each sample ID to a JSON object of numeric
-  Processing parameters. The keys define the ordering of the regression targets.
+- `artworks/` contains colour reference images whose file names (without extension)
+  match the `.npy` tensor they are paired with. Supported formats include PNG, JPEG,
+  and BMP. When the dataset class is instantiated it will automatically extract
+  Processing-ready descriptors such as dominant background and accent colours, hue and
+  saturation statistics, gradient strength, texture complexity, and derived sketch
+  controls like `stroke_weight`, `pattern_scale`, and `noise_scale`.
 
-Example `metadata.json` snippet:
-
-```json
-{
-  "sample_0001": {
-    "stroke_weight": 2.5,
-    "color_hue": 180,
-    "noise_scale": 0.8
-  },
-  "sample_0002": {
-    "stroke_weight": 1.7,
-    "color_hue": 240,
-    "noise_scale": 0.5
-  }
-}
-```
+> **Tip:** the feature extraction step resizes images whose longest edge exceeds 512
+> pixels to keep preprocessing fast while still capturing global texture cues. Adjust
+> this by passing `resize_long_edge` to
+> `processing_features.compute_processing_parameters` if you customise the dataset.
 
 ## Training
 
 Install the dependencies:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch torchvision torchaudio pillow --index-url https://download.pytorch.org/whl/cu118
 ```
 
 (Optional) create a virtual environment before installing packages.

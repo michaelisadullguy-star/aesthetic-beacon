@@ -1,14 +1,15 @@
 """Dataset utilities for brainwave-to-Processing parameter mapping."""
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from .processing_features import compute_processing_parameters
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class SampleMetadata:
 
     sample_id: str
     target: torch.Tensor
+    image_path: Path
 
 
 class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
@@ -25,14 +27,17 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     The dataset expects the following layout::
 
         dataset_root/
-            metadata.json
             brainwaves/
                 <sample_id>.npy
+            artworks/
+                <sample_id>.<ext>
 
-    ``metadata.json`` should contain a mapping from ``sample_id`` to a dictionary of
-    Processing parameters. Each entry in the dictionary must be numeric. The order of
-    the parameters will be inferred from the keys in the first sample, so it is
-    recommended to keep the keys consistent across all samples.
+    ``artworks`` should contain an RGB image for each brainwave segment. The file name
+    (without the extension) must match the ``sample_id`` of the corresponding
+    ``.npy`` file. Supported extensions are ``.png``, ``.jpg``, ``.jpeg`` and ``.bmp``.
+    Processing parameters are derived automatically from the artwork using
+    :func:`~src.processing_features.compute_processing_parameters` when the dataset is
+    instantiated.
 
     Parameters
     ----------
@@ -61,51 +66,66 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.target_transform = target_transform
         self.dtype = dtype
 
-        metadata_path = self.root / "metadata.json"
-        if not metadata_path.exists():
-            raise FileNotFoundError(
-                f"Could not find metadata.json at {metadata_path!s}. "
-                "Ensure the dataset is prepared correctly."
-            )
-
-        with metadata_path.open("r", encoding="utf-8") as handle:
-            metadata_raw: Dict[str, Dict[str, float]] = json.load(handle)
-
-        if not metadata_raw:
-            raise ValueError("metadata.json is empty; at least one sample is required.")
-
-        # Determine the canonical order of Processing parameters using the first entry.
-        first_key = next(iter(metadata_raw))
-        self.parameter_names: Sequence[str] = tuple(metadata_raw[first_key].keys())
-
-        missing_parameters: Dict[str, List[str]] = {}
-        self.samples: List[SampleMetadata] = []
-        for sample_id, param_dict in metadata_raw.items():
-            missing = [p for p in self.parameter_names if p not in param_dict]
-            if missing:
-                missing_parameters[sample_id] = missing
-                continue
-
-            targets = torch.tensor(
-                [float(param_dict[p]) for p in self.parameter_names], dtype=torch.float32
-            )
-            self.samples.append(SampleMetadata(sample_id=sample_id, target=targets))
-
-        if missing_parameters:
-            formatted = ", ".join(
-                f"{sample_id}: missing {', '.join(params)}"
-                for sample_id, params in missing_parameters.items()
-            )
-            raise ValueError(
-                "Inconsistent parameter definitions detected in metadata.json: "
-                f"{formatted}"
-            )
-
         self.brainwave_dir = self.root / "brainwaves"
         if not self.brainwave_dir.exists():
-            raise FileNotFoundError(
-                "Expected a 'brainwaves' directory alongside metadata.json."
+            raise FileNotFoundError("Expected a 'brainwaves' directory in the dataset root.")
+
+        self.artwork_dir = self.root / "artworks"
+        if not self.artwork_dir.exists():
+            raise FileNotFoundError("Expected an 'artworks' directory in the dataset root.")
+
+        supported_exts = (".png", ".jpg", ".jpeg", ".bmp")
+        self.samples = []
+        parameter_names: Optional[Sequence[str]] = None
+
+        brainwave_files = sorted(self.brainwave_dir.glob("*.npy"))
+        if not brainwave_files:
+            raise ValueError("No brainwave files found. Ensure the dataset contains *.npy files.")
+
+        missing_artworks: List[str] = []
+        for brainwave_path in brainwave_files:
+            sample_id = brainwave_path.stem
+            candidates = sorted(
+                path
+                for path in self.artwork_dir.glob(f"{sample_id}.*")
+                if path.suffix.lower() in supported_exts
             )
+            image_path = candidates[0] if candidates else None
+
+            if image_path is None:
+                missing_artworks.append(sample_id)
+                continue
+
+            parameter_dict = compute_processing_parameters(image_path)
+            if parameter_names is None:
+                parameter_names = tuple(parameter_dict.keys())
+            else:
+                current_names = tuple(parameter_dict.keys())
+                if current_names != tuple(parameter_names):
+                    raise ValueError(
+                        "Inconsistent parameter ordering encountered when analysing artworks."
+                    )
+
+            assert parameter_names is not None
+            target = torch.tensor(
+                [float(parameter_dict[name]) for name in parameter_names], dtype=torch.float32
+            )
+            self.samples.append(
+                SampleMetadata(sample_id=sample_id, target=target, image_path=image_path)
+            )
+
+        if missing_artworks:
+            missing_formatted = ", ".join(missing_artworks)
+            raise FileNotFoundError(
+                f"Missing artwork images for the following samples: {missing_formatted}"
+            )
+
+        if not self.samples:
+            raise ValueError(
+                "The dataset is empty after processing artworks. Ensure images match *.npy files."
+            )
+
+        self.parameter_names = parameter_names or ()
 
     def __len__(self) -> int:
         return len(self.samples)
