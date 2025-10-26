@@ -143,6 +143,8 @@ def build_dataloaders(
     batch_size: int,
     num_workers: int,
 ) -> tuple[DataLoader, Optional[DataLoader]]:
+    dataset_size = len(dataset)
+
     if validation_split <= 0:
         loader = DataLoader(
             dataset,
@@ -154,8 +156,26 @@ def build_dataloaders(
         )
         return loader, None
 
-    validation_size = int(len(dataset) * validation_split)
-    training_size = len(dataset) - validation_size
+    validation_size = int(dataset_size * validation_split)
+
+    if 0 < validation_split < 1 and validation_size == 0:
+        validation_size = 1
+
+    if validation_size >= dataset_size:
+        validation_size = dataset_size - 1
+
+    if validation_size <= 0:
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+            collate_fn=collate_pad_batch,
+        )
+        return loader, None
+
+    training_size = dataset_size - validation_size
     train_dataset, val_dataset = random_split(dataset, [training_size, validation_size])
 
     train_loader = DataLoader(
