@@ -201,7 +201,7 @@ def load_brainwave_array(
             f"Unsupported brainwave file type: {path.suffix}. Expected a NumPy '.npy' tensor."
         )
 
-    array = np.load(path)
+    array = np.load(path, allow_pickle=False)
     array = np.asarray(array, dtype=np.float32)
 
     if array.ndim != 2:
