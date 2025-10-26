@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, OrderedDict as OrderedDictType
+from typing import OrderedDict as OrderedDictType
 
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 
 
@@ -56,12 +60,96 @@ def _rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
     return np.stack([hue, saturation, value], axis=-1)
 
 
-def _sliding_window_view(array: np.ndarray, window_shape: Iterable[int]) -> np.ndarray:
-    """Compatibility wrapper for ``numpy.lib.stride_tricks.sliding_window_view``."""
+def _gabor_kernel(
+    theta: float, *, sigma: float = 1.5, lambd: float = 3.0, gamma: float = 0.5, size: int = 7
+) -> torch.Tensor:
+    """Create a Gabor kernel for the provided orientation."""
 
-    from numpy.lib.stride_tricks import sliding_window_view
+    # Create coordinate grid centred at zero.
+    coords = torch.linspace(-(size // 2), size // 2, size)
+    y, x = torch.meshgrid(coords, coords, indexing="ij")
 
-    return sliding_window_view(array, window_shape)
+    # Rotate coordinates.
+    rotx = x * torch.cos(theta) + y * torch.sin(theta)
+    roty = -x * torch.sin(theta) + y * torch.cos(theta)
+
+    gaussian = torch.exp(-0.5 * ((rotx ** 2 + (gamma ** 2) * roty ** 2) / (sigma ** 2)))
+    sinusoid = torch.cos((2.0 * np.pi * rotx) / lambd)
+    kernel = gaussian * sinusoid
+    kernel -= kernel.mean()
+    kernel /= kernel.abs().sum().clamp_min(1e-6)
+    return kernel
+
+
+class ProcessingFeatureCNN(nn.Module):
+    """Small CNN used to derive texture descriptors from artwork images."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.edge_conv = nn.Conv2d(1, 4, kernel_size=3, padding=1, bias=False)
+        self.texture_conv = nn.Conv2d(4, 4, kernel_size=7, padding=3, bias=False)
+        self.orientation_conv = nn.Conv2d(4, 8, kernel_size=1, bias=False)
+
+        self._initialise_weights()
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+
+    def _initialise_weights(self) -> None:
+        with torch.no_grad():
+            sobel_x = torch.tensor(
+                [[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]], dtype=torch.float32
+            )
+            sobel_y = sobel_x.t().contiguous()
+            laplacian = torch.tensor(
+                [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32
+            )
+            smooth = torch.full((3, 3), 1.0 / 9.0, dtype=torch.float32)
+
+            self.edge_conv.weight.zero_()
+            self.edge_conv.weight[0, 0] = sobel_x / sobel_x.abs().sum()
+            self.edge_conv.weight[1, 0] = sobel_y / sobel_y.abs().sum()
+            self.edge_conv.weight[2, 0] = laplacian / laplacian.abs().sum().clamp_min(1.0)
+            self.edge_conv.weight[3, 0] = smooth
+
+            orientations = [0.0, np.pi / 4.0, np.pi / 2.0, 3.0 * np.pi / 4.0]
+            self.texture_conv.weight.zero_()
+            for index, angle in enumerate(orientations):
+                kernel = _gabor_kernel(angle)
+                # Blend gradient channels with orientation-sensitive Gabor filters and
+                # inject a small contribution from the Laplacian response so the
+                # activations remain sensitive to fine texture variations.
+                self.texture_conv.weight[index, 0] = kernel * 0.5
+                self.texture_conv.weight[index, 1] = kernel * 0.5
+                self.texture_conv.weight[index, 2] = kernel * 0.25
+                self.texture_conv.weight[index, 3] = kernel * 0.1
+
+            self.orientation_conv.weight.zero_()
+            for index in range(4):
+                self.orientation_conv.weight[index, index, 0, 0] = 1.0
+                self.orientation_conv.weight[index + 4, index, 0, 0] = -1.0
+
+    def forward(self, luminance: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Run the CNN on a luminance map and return intermediate features."""
+
+        conv1 = self.edge_conv(luminance)
+        edge_activation = F.relu(conv1)
+        conv2 = self.texture_conv(edge_activation)
+        texture_activation = F.relu(conv2)
+        conv3 = self.orientation_conv(texture_activation)
+        orientation_activation = F.relu(conv3)
+        return {
+            "conv1": conv1,
+            "edge": edge_activation,
+            "texture": texture_activation,
+            "orientation": orientation_activation,
+        }
+
+
+@lru_cache(maxsize=1)
+def _get_feature_extractor() -> ProcessingFeatureCNN:
+    """Singleton accessor so weights are created only once per process."""
+
+    return ProcessingFeatureCNN()
 
 
 def compute_processing_parameters(
@@ -70,6 +158,13 @@ def compute_processing_parameters(
     resize_long_edge: int | None = 512,
 ) -> OrderedDictType[str, float]:
     """Analyse an artwork image and derive Processing-friendly parameters.
+
+    The implementation first extracts global colour statistics directly in the RGB
+    domain to recover palette information. Texture-oriented statistics are produced by
+    forwarding the image through :class:`ProcessingFeatureCNN`, a lightweight
+    convolutional network whose hand-crafted kernels emulate classical edge, Gabor, and
+    orientation detectors. The resulting activations are aggregated into parameters that
+    directly map to Processing sketch controls.
 
     Parameters
     ----------
@@ -103,36 +198,47 @@ def compute_processing_parameters(
     std_color = rgb.std(axis=(0, 1))
 
     flattened = rgb.reshape(-1, 3)
-    luminance = gray.reshape(-1)
-    percentile_count = max(int(len(luminance) * 0.1), 1)
-    dark_indices = np.argpartition(luminance, percentile_count)[:percentile_count]
-    light_indices = np.argpartition(luminance, len(luminance) - percentile_count)[-percentile_count:]
+    luminance_flat = gray.reshape(-1)
+    percentile_count = max(int(len(luminance_flat) * 0.1), 1)
+    dark_indices = np.argpartition(luminance_flat, percentile_count)[:percentile_count]
+    light_indices = np.argpartition(
+        luminance_flat, len(luminance_flat) - percentile_count
+    )[-percentile_count:]
     background_color = flattened[dark_indices].mean(axis=0)
     accent_color = flattened[light_indices].mean(axis=0)
 
-    # HSV statistics capture hue and saturation trends.
     hsv = _rgb_to_hsv(rgb)
     hue_mean = float(np.mean(hsv[..., 0]))
     hue_variance = float(np.var(hsv[..., 0]))
     saturation_mean = float(np.mean(hsv[..., 1]))
     value_mean = float(np.mean(hsv[..., 2]))
 
-    # Texture descriptors derived from local gradients.
-    gx = np.pad(np.diff(gray, axis=1), ((0, 0), (0, 1)), mode="edge")
-    gy = np.pad(np.diff(gray, axis=0), ((0, 1), (0, 0)), mode="edge")
-    gradient_magnitude = np.sqrt(gx ** 2 + gy ** 2)
-    gradient_strength = float(np.mean(gradient_magnitude))
-    edge_threshold = float(np.mean(gradient_magnitude) + np.std(gradient_magnitude))
-    edge_density = float(np.mean(gradient_magnitude > edge_threshold))
+    # CNN-based texture descriptors.
+    luminance_tensor = torch.from_numpy(gray).to(torch.float32).unsqueeze(0).unsqueeze(0)
+    extractor = _get_feature_extractor()
+    with torch.no_grad():
+        feature_maps = extractor(luminance_tensor)
 
-    local_windows = _sliding_window_view(gray, (5, 5))
-    local_variance = np.var(local_windows, axis=(-2, -1))
-    texture_complexity = float(np.mean(local_variance))
+    grad_x = feature_maps["conv1"][0, 0]
+    grad_y = feature_maps["conv1"][0, 1]
+    laplacian_map = feature_maps["conv1"][0, 2]
+    gradient_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+    gradient_strength = float(gradient_magnitude.mean().item())
+    edge_threshold = gradient_magnitude.mean() + gradient_magnitude.std()
+    edge_density = float((gradient_magnitude > edge_threshold).float().mean().item())
+
+    texture_maps = feature_maps["texture"].abs()
+    texture_complexity = float(texture_maps.mean().item())
+
+    orientation_maps = feature_maps["orientation"]
+    pattern_variability = float(orientation_maps.std(dim=(-1, -2)).mean().item())
 
     # Map statistics into Processing-oriented scales.
-    stroke_weight = float(np.clip(1.0 + edge_density * 12.0, 1.0, 12.0))
-    noise_scale = float(np.clip(gray.std() * 12.0, 0.5, 12.0))
-    pattern_scale = float(np.clip(1.0 + texture_complexity * 80.0, 1.0, 25.0))
+    stroke_weight = float(np.clip(1.0 + edge_density * 10.0, 1.0, 12.0))
+    noise_scale = float(
+        np.clip(0.5 + laplacian_map.abs().mean().item() * 10.0, 0.5, 12.0)
+    )
+    pattern_scale = float(np.clip(1.0 + pattern_variability * 25.0, 1.0, 25.0))
     colour_variation = float(np.mean(std_color))
 
     parameters = OrderedDict(

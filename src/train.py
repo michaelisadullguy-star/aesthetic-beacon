@@ -106,6 +106,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable automatic mixed precision training.",
     )
+    parser.add_argument(
+        "--expected-channels",
+        type=int,
+        default=8,
+        help="Number of frequency channels expected in each brainwave recording.",
+    )
+    parser.add_argument(
+        "--hex-word-bits",
+        type=int,
+        default=16,
+        help=(
+            "Interpret hexadecimal text samples using this two's complement bit width. "
+            "Set to 0 to keep values unsigned."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -203,7 +218,13 @@ def main() -> None:
     device = torch.device(args.device)
 
     transforms = create_transforms(args)
-    dataset = BrainwaveProcessingDataset(args.dataset, transform=transforms)
+    hex_word_bits = args.hex_word_bits if args.hex_word_bits > 0 else None
+    dataset = BrainwaveProcessingDataset(
+        args.dataset,
+        transform=transforms,
+        expected_channels=args.expected_channels,
+        hex_word_bits=hex_word_bits,
+    )
     parameter_dim = dataset.parameter_size()
 
     train_loader, val_loader = build_dataloaders(

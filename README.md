@@ -14,7 +14,8 @@ characteristics.
 - `src/train.py` &ndash; Command-line training entry point that ties the dataset and model
   together.
 - `src/processing_features.py` &ndash; Image analysis helpers that convert artwork texture
-  and colour statistics into Processing-friendly parameter vectors.
+  and colour statistics into Processing-friendly parameter vectors using a lightweight
+  convolutional neural network tailored to Processing controls.
 
 ## Preparing the dataset
 
@@ -23,7 +24,7 @@ Organise the data with the following layout:
 ```
 dataset_root/
 ├── brainwaves/
-│   ├── sample_0001.npy
+│   ├── sample_0001.txt
 │   ├── sample_0002.npy
 │   └── ...
 └── artworks/
@@ -32,14 +33,18 @@ dataset_root/
     └── ...
 ```
 
-- Each `brainwaves/*.npy` file must contain an `8 × T` floating-point array, where `T`
-  is the number of samples captured at 640 Hz (3200 for a five-second recording).
+- Each `brainwaves/*.txt` file should contain hexadecimal samples exported by the EEG
+  device. Values are read row-wise, converted from two's complement (16-bit by
+  default), and reshaped into an `8 × T` tensor (3200 samples for a five-second
+  recording). If you already have NumPy arrays, you can keep them as `*.npy` files;
+  both formats are supported.
 - `artworks/` contains colour reference images whose file names (without extension)
-  match the `.npy` tensor they are paired with. Supported formats include PNG, JPEG,
+  match the brainwave recording they are paired with. Supported formats include PNG, JPEG,
   and BMP. When the dataset class is instantiated it will automatically extract
-  Processing-ready descriptors such as dominant background and accent colours, hue and
-  saturation statistics, gradient strength, texture complexity, and derived sketch
-  controls like `stroke_weight`, `pattern_scale`, and `noise_scale`.
+  Processing-ready descriptors. Dominant palette values are obtained directly from RGB
+  statistics, while texture-oriented controls such as gradient strength, orientation
+  variance, `stroke_weight`, `pattern_scale`, and `noise_scale` are inferred by a fixed
+  convolutional neural network that emulates classical edge and Gabor filter banks.
 
 > **Tip:** the feature extraction step resizes images whose longest edge exceeds 512
 > pixels to keep preprocessing fast while still capturing global texture cues. Adjust
@@ -65,12 +70,16 @@ python -m src.train /path/to/dataset \
   --epochs 150 \
   --learning-rate 5e-4 \
   --crop-length 2560 \
+  --expected-channels 8 \
+  --hex-word-bits 16 \
   --amp
 ```
 
 During training, JSON logs are printed every epoch and checkpoints are stored in the
 specified output directory. The best-performing model on the validation split is also
-saved as `best_model.pt`.
+saved as `best_model.pt`. Use `--hex-word-bits 0` if your hexadecimal files already
+encode unsigned amplitudes, or adjust the value to match the precision exported by
+your recording hardware.
 
 ## Inference
 
