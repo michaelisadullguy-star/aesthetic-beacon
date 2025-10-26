@@ -29,16 +29,16 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 
         dataset_root/
             brainwaves/
-                <sample_id>.txt  # or <sample_id>.npy
+                <sample_id>.npy
             artworks/
                 <sample_id>.<ext>
 
     ``artworks`` should contain an RGB image for each brainwave segment. The file name
     (without the extension) must match the ``sample_id`` of the corresponding
     brainwave recording. Supported artwork extensions are ``.png``, ``.jpg``,
-    ``.jpeg`` and ``.bmp``. Brainwave recordings may be stored as NumPy ``.npy``
-    tensors or as hexadecimal ``.txt`` files produced by the acquisition device.
-    Processing parameters are derived automatically from the artwork using
+    ``.jpeg`` and ``.bmp``. Brainwave recordings must be stored as NumPy ``.npy``
+    tensors with shape ``(8, 3200)`` representing five seconds of activity sampled
+    across eight bands. Processing parameters are derived automatically from the artwork using
     :func:`~src.processing_features.compute_processing_parameters` when the dataset is
     instantiated.
 
@@ -55,11 +55,10 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     dtype : torch.dtype
         The floating-point data type to use for the inputs.
     expected_channels : int, default 8
-        The number of frequency bands expected per recording. Used for validation and
-        reshaping flattened hexadecimal text files.
-    hex_word_bits : int, optional
-        Bit width for interpreting unsigned hexadecimal tokens as two's complement
-        signed integers. Set to ``None`` to keep values unsigned.
+        Number of channels (frequency bands) expected per recording.
+    expected_samples : int, default 3200
+        Number of temporal samples expected per channel. Set to ``0`` to disable the
+        length check while keeping channel validation.
     """
 
     def __init__(
@@ -69,7 +68,7 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         target_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         dtype: torch.dtype = torch.float32,
         expected_channels: int = 8,
-        hex_word_bits: Optional[int] = 16,
+        expected_samples: int = 3200,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -77,7 +76,7 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.target_transform = target_transform
         self.dtype = dtype
         self.expected_channels = expected_channels
-        self.hex_word_bits = hex_word_bits
+        self.expected_samples = expected_samples
 
         self.brainwave_dir = self.root / "brainwaves"
         if not self.brainwave_dir.exists():
@@ -88,7 +87,7 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             raise FileNotFoundError("Expected an 'artworks' directory in the dataset root.")
 
         supported_artwork_exts = (".png", ".jpg", ".jpeg", ".bmp")
-        supported_brainwave_exts = (".npy", ".txt")
+        supported_brainwave_exts = (".npy",)
         self.samples: List[SampleMetadata] = []
         parameter_names: Optional[Sequence[str]] = None
 
@@ -104,7 +103,7 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 
         if not brainwave_paths:
             raise ValueError(
-                "No brainwave files found. Provide either hexadecimal .txt or .npy tensors."
+                "No brainwave files found. Provide NumPy '.npy' tensors shaped as 8x3200 recordings."
             )
 
         missing_artworks: List[str] = []
@@ -166,7 +165,7 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             load_brainwave_array(
                 sample.brainwave_path,
                 expected_channels=self.expected_channels,
-                hex_word_bits=self.hex_word_bits,
+                expected_samples=self.expected_samples,
             )
         ).to(self.dtype)
 
@@ -193,33 +192,22 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 def load_brainwave_array(
     path: Path,
     expected_channels: int = 8,
-    hex_word_bits: Optional[int] = 16,
+    expected_samples: int = 3200,
 ) -> np.ndarray:
-    """Load a brainwave recording from either ``.npy`` or hexadecimal ``.txt`` formats."""
+    """Load a brainwave recording stored as a NumPy ``.npy`` tensor."""
 
-    suffix = path.suffix.lower()
-    if suffix == ".npy":
-        array = np.load(path)
-    elif suffix == ".txt":
-        array = _load_hex_brainwave_text(path, expected_channels, hex_word_bits)
-    else:
-        raise ValueError(f"Unsupported brainwave file type: {path.suffix}")
+    if path.suffix.lower() != ".npy":
+        raise ValueError(
+            f"Unsupported brainwave file type: {path.suffix}. Expected a NumPy '.npy' tensor."
+        )
 
+    array = np.load(path, allow_pickle=False)
     array = np.asarray(array, dtype=np.float32)
 
-    if array.ndim == 1:
-        if expected_channels <= 0:
-            raise ValueError(
-                "Cannot reshape 1D brainwave data without a positive expected channel count."
-            )
-        if array.size % expected_channels != 0:
-            raise ValueError(
-                "Brainwave vector length is not divisible by the expected number of channels."
-            )
-        array = array.reshape(expected_channels, array.size // expected_channels)
-
     if array.ndim != 2:
-        raise ValueError("Brainwave tensors must be 2-dimensional with shape [channels, samples].")
+        raise ValueError(
+            "Brainwave tensors must be 2-dimensional with shape [channels, samples]."
+        )
 
     if expected_channels > 0:
         if array.shape[0] == expected_channels:
@@ -231,68 +219,12 @@ def load_brainwave_array(
                 f"Brainwave tensor has {array.shape[0]} channels, expected {expected_channels}."
             )
 
-    return array
-
-
-def _load_hex_brainwave_text(
-    path: Path,
-    expected_channels: int,
-    hex_word_bits: Optional[int],
-) -> np.ndarray:
-    """Parse hexadecimal samples stored in plain-text files."""
-
-    with path.open("r", encoding="utf-8") as handle:
-        tokens = []
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            for token in stripped.replace(",", " ").split():
-                cleaned = token.strip()
-                if not cleaned:
-                    continue
-                tokens.append(cleaned)
-
-    if not tokens:
-        raise ValueError(f"No hexadecimal samples found in {path!s}.")
-
-    values = [_hex_to_signed_int(token, hex_word_bits) for token in tokens]
-    array = np.asarray(values, dtype=np.float32)
-
-    if expected_channels > 0:
-        if array.size % expected_channels != 0:
-            raise ValueError(
-                f"File {path!s} contains {array.size} samples which is not divisible by "
-                f"expected_channels={expected_channels}."
-            )
-        array = array.reshape(expected_channels, array.size // expected_channels)
+    if expected_samples > 0 and array.shape[1] != expected_samples:
+        raise ValueError(
+            f"Brainwave tensor has {array.shape[1]} samples per channel, expected {expected_samples}."
+        )
 
     return array
-
-
-def _hex_to_signed_int(token: str, hex_word_bits: Optional[int]) -> int:
-    """Convert a hexadecimal token to a signed integer."""
-
-    negative = token.startswith("-")
-    if negative:
-        token = token[1:]
-
-    token = token.lower()
-    if token.startswith("0x"):
-        token = token[2:]
-
-    if not token:
-        raise ValueError("Encountered an empty hexadecimal token.")
-
-    value = int(token, 16)
-    if negative:
-        value = -value
-    elif hex_word_bits and hex_word_bits > 0:
-        max_value = 1 << hex_word_bits
-        sign_threshold = 1 << (hex_word_bits - 1)
-        value = value - max_value if value >= sign_threshold else value
-
-    return value
 
 
 def z_score_normalise(features: torch.Tensor) -> torch.Tensor:

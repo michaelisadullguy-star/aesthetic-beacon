@@ -113,13 +113,10 @@ def parse_args() -> argparse.Namespace:
         help="Number of frequency channels expected in each brainwave recording.",
     )
     parser.add_argument(
-        "--hex-word-bits",
+        "--expected-samples",
         type=int,
-        default=16,
-        help=(
-            "Interpret hexadecimal text samples using this two's complement bit width. "
-            "Set to 0 to keep values unsigned."
-        ),
+        default=3200,
+        help="Number of temporal samples per channel (3200 for five seconds at 640 Hz).",
     )
     return parser.parse_args()
 
@@ -218,12 +215,11 @@ def main() -> None:
     device = torch.device(args.device)
 
     transforms = create_transforms(args)
-    hex_word_bits = args.hex_word_bits if args.hex_word_bits > 0 else None
     dataset = BrainwaveProcessingDataset(
         args.dataset,
         transform=transforms,
         expected_channels=args.expected_channels,
-        hex_word_bits=hex_word_bits,
+        expected_samples=args.expected_samples,
     )
     parameter_dim = dataset.parameter_size()
 

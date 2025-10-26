@@ -1,4 +1,4 @@
-# Aesthetic Beacon
+# aesthetic-beacon
 
 This project provides a PyTorch-based training pipeline for mapping five-second brainwave
 segments to Processing sketch parameters that capture artwork texture and colour
@@ -24,7 +24,7 @@ Organise the data with the following layout:
 ```
 dataset_root/
 ├── brainwaves/
-│   ├── sample_0001.txt
+│   ├── sample_0001.npy
 │   ├── sample_0002.npy
 │   └── ...
 └── artworks/
@@ -33,11 +33,9 @@ dataset_root/
     └── ...
 ```
 
-- Each `brainwaves/*.txt` file should contain hexadecimal samples exported by the EEG
-  device. Values are read row-wise, converted from two's complement (16-bit by
-  default), and reshaped into an `8 × T` tensor (3200 samples for a five-second
-  recording). If you already have NumPy arrays, you can keep them as `*.npy` files;
-  both formats are supported.
+- Each `brainwaves/*.npy` file should contain a floating-point tensor with shape
+  `(8, 3200)` representing eight frequency bands sampled at 640 Hz over five
+  seconds. Values are interpreted directly with no hexadecimal decoding step.
 - `artworks/` contains colour reference images whose file names (without extension)
   match the brainwave recording they are paired with. Supported formats include PNG, JPEG,
   and BMP. When the dataset class is instantiated it will automatically extract
@@ -71,15 +69,13 @@ python -m src.train /path/to/dataset \
   --learning-rate 5e-4 \
   --crop-length 2560 \
   --expected-channels 8 \
-  --hex-word-bits 16 \
+  --expected-samples 3200 \
   --amp
 ```
 
 During training, JSON logs are printed every epoch and checkpoints are stored in the
 specified output directory. The best-performing model on the validation split is also
-saved as `best_model.pt`. Use `--hex-word-bits 0` if your hexadecimal files already
-encode unsigned amplitudes, or adjust the value to match the precision exported by
-your recording hardware.
+saved as `best_model.pt`.
 
 ## Inference
 
