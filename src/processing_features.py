@@ -122,8 +122,8 @@ class ProcessingParameterPredictor(nn.Module):
         minima = images.amin(dim=(2, 3))
         maxima = images.amax(dim=(2, 3))
         luminance = 0.2989 * images[:, 0] + 0.5870 * images[:, 1] + 0.1140 * images[:, 2]
-        luminance_mean = luminance.mean(dim=(1, 2), keepdim=True)
-        luminance_std = luminance.std(dim=(1, 2), keepdim=True)
+        luminance_mean = luminance.mean(dim=(1, 2), keepdim=False).unsqueeze(1)
+        luminance_std = luminance.std(dim=(1, 2), keepdim=False).unsqueeze(1)
         return torch.cat(
             [
                 means,
@@ -230,6 +230,7 @@ def compute_processing_parameters(
             dropout=float(model_config.get("dropout", 0.1)),
         ).to(inference_device)
         working_model.load_state_dict(model.state_dict())
+        working_model.eval()
     tensor = tensor.to(inference_device)
 
     with torch.no_grad():
