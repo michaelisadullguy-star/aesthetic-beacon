@@ -1,4 +1,4 @@
-# aesthetic-beacon
+# Aesthetic Beacon
 
 This project provides a PyTorch-based training pipeline for mapping five-second brainwave
 segments to Processing sketch parameters that capture artwork texture and colour
@@ -13,9 +13,11 @@ characteristics.
   Processing-ready descriptors.
 - `src/train.py` &ndash; Command-line training entry point that ties the dataset and model
   together.
-- `src/processing_features.py` &ndash; Image analysis helpers that convert artwork texture
-  and colour statistics into Processing-friendly parameter vectors using a lightweight
-  convolutional neural network tailored to Processing controls.
+- `src/processing_features.py` &ndash; Image analysis helpers plus the
+  `ProcessingParameterPredictor`, a trainable convolutional model that maps
+  artworks to Processing-friendly parameter vectors.
+- `src/train_processing_features.py` &ndash; Command-line utility used to train the
+  artwork-to-Processing predictor on curated image/parameter pairs.
 
 ## Preparing the dataset
 
@@ -37,17 +39,59 @@ dataset_root/
   `(8, 3200)` representing eight frequency bands sampled at 640 Hz over five
   seconds. Values are interpreted directly with no hexadecimal decoding step.
 - `artworks/` contains colour reference images whose file names (without extension)
-  match the brainwave recording they are paired with. Supported formats include PNG, JPEG,
-  and BMP. When the dataset class is instantiated it will automatically extract
-  Processing-ready descriptors. Dominant palette values are obtained directly from RGB
-  statistics, while texture-oriented controls such as gradient strength, orientation
-  variance, `stroke_weight`, `pattern_scale`, and `noise_scale` are inferred by a fixed
-  convolutional neural network that emulates classical edge and Gabor filter banks.
+  match the brainwave recording they are paired with. Supported formats include PNG,
+  JPEG, and BMP. Processing descriptors are predicted by the trained artwork model
+  referenced via the `--processing-weights` flag when launching `src/train.py`.
 
-> **Tip:** the feature extraction step resizes images whose longest edge exceeds 512
-> pixels to keep preprocessing fast while still capturing global texture cues. Adjust
-> this by passing `resize_long_edge` to
-> `processing_features.compute_processing_parameters` if you customise the dataset.
+> **Tip:** the artwork preprocessing pipeline resizes images whose longest edge
+> exceeds 512 pixels during both model training and inference. Adjust this with
+> the `--resize-long-edge` option in `train_processing_features.py` or by passing
+> `processing_resize_long_edge` to `BrainwaveProcessingDataset`.
+
+## Training the artwork parameter model
+
+Before mapping brainwaves to Processing controls, train the artwork predictor on
+reference images paired with manually curated Processing parameters. Arrange the
+artwork dataset as follows:
+
+```
+artwork_dataset/
+├── images/
+│   ├── sample_0001.png
+│   ├── sample_0002.png
+│   └── ...
+└── metadata.json
+```
+
+`metadata.json` may be either an object mapping image identifiers to parameter
+dictionaries or a list of objects with `id`/`image` and `parameters` keys:
+
+```json
+[
+  {
+    "id": "sample_0001",
+    "parameters": {
+      "background_r": 0.12,
+      "background_g": 0.08,
+      "background_b": 0.15,
+      "stroke_weight": 4.0
+      // ... additional parameters ...
+    }
+  }
+]
+```
+
+Train the predictor and store the resulting checkpoint:
+
+```bash
+python -m src.train_processing_features /path/to/artwork_dataset \
+  --output processing_features.pt \
+  --epochs 120 \
+  --batch-size 16
+```
+
+The generated `.pt` file contains the learned weights, parameter ordering, and
+normalisation statistics required for downstream inference.
 
 ## Training
 
@@ -59,7 +103,7 @@ pip install torch torchvision torchaudio pillow --index-url https://download.pyt
 
 (Optional) create a virtual environment before installing packages.
 
-Run the training script:
+Run the brainwave-to-Processing training script and provide the artwork weights:
 
 ```bash
 python -m src.train /path/to/dataset \
@@ -70,6 +114,7 @@ python -m src.train /path/to/dataset \
   --crop-length 2560 \
   --expected-channels 8 \
   --expected-samples 3200 \
+  --processing-weights /path/to/processing_features.pt \
   --amp
 ```
 

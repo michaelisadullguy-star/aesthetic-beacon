@@ -59,6 +59,13 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     expected_samples : int, default 3200
         Number of temporal samples expected per channel. Set to ``0`` to disable the
         length check while keeping channel validation.
+    processing_weights : Path or str
+        Path to the trained artwork-to-Processing parameter model checkpoint used
+        to derive targets from the artwork images.
+    processing_device : str or torch.device, optional
+        Device on which the preprocessing model is executed. Defaults to CPU.
+    processing_resize_long_edge : int, optional
+        Optional resize applied before preprocessing. ``None`` disables resizing.
     """
 
     def __init__(
@@ -69,6 +76,10 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         dtype: torch.dtype = torch.float32,
         expected_channels: int = 8,
         expected_samples: int = 3200,
+        *,
+        processing_weights: Path | str,
+        processing_device: str | torch.device | None = None,
+        processing_resize_long_edge: int | None = 512,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -77,6 +88,14 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.dtype = dtype
         self.expected_channels = expected_channels
         self.expected_samples = expected_samples
+
+        self.processing_weights = Path(processing_weights).expanduser().resolve()
+        if not self.processing_weights.exists():
+            raise FileNotFoundError(
+                f"Processing weights not found at '{self.processing_weights}'. Train the artwork model first."
+            )
+        self.processing_device = processing_device
+        self.processing_resize_long_edge = processing_resize_long_edge
 
         self.brainwave_dir = self.root / "brainwaves"
         if not self.brainwave_dir.exists():
@@ -120,7 +139,12 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 missing_artworks.append(sample_id)
                 continue
 
-            parameter_dict = compute_processing_parameters(image_path)
+            parameter_dict = compute_processing_parameters(
+                image_path,
+                weights_path=self.processing_weights,
+                resize_long_edge=self.processing_resize_long_edge,
+                device=self.processing_device,
+            )
             if parameter_names is None:
                 parameter_names = tuple(parameter_dict.keys())
             else:
@@ -201,7 +225,7 @@ def load_brainwave_array(
             f"Unsupported brainwave file type: {path.suffix}. Expected a NumPy '.npy' tensor."
         )
 
-    array = np.load(path, allow_pickle=False)
+    array = np.load(path)
     array = np.asarray(array, dtype=np.float32)
 
     if array.ndim != 2:

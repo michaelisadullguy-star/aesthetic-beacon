@@ -118,6 +118,12 @@ def parse_args() -> argparse.Namespace:
         default=3200,
         help="Number of temporal samples per channel (3200 for five seconds at 640 Hz).",
     )
+    parser.add_argument(
+        "--processing-weights",
+        type=Path,
+        required=True,
+        help="Path to the trained artwork preprocessing model checkpoint.",
+    )
     return parser.parse_args()
 
 
@@ -220,6 +226,8 @@ def main() -> None:
         transform=transforms,
         expected_channels=args.expected_channels,
         expected_samples=args.expected_samples,
+        processing_weights=args.processing_weights,
+        processing_device=args.device,
     )
     parameter_dim = dataset.parameter_size()
 
