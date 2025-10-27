@@ -1,4 +1,4 @@
-# Aesthetic Beacon
+# aesthetic-beacon
 
 This project provides a PyTorch-based training pipeline for mapping five-second brainwave
 segments to Processing sketch parameters that capture artwork texture and colour
