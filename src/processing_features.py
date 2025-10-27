@@ -86,56 +86,51 @@ class ProcessingFeatureCNN(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.edge_conv = nn.Conv2d(1, 4, kernel_size=3, padding=1, bias=False)
-        self.texture_conv = nn.Conv2d(4, 4, kernel_size=7, padding=3, bias=False)
-        self.orientation_conv = nn.Conv2d(4, 8, kernel_size=1, bias=False)
 
-        self._initialise_weights()
-        for parameter in self.parameters():
-            parameter.requires_grad_(False)
+        sobel_x = torch.tensor(
+            [[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]], dtype=torch.float32
+        )
+        sobel_y = sobel_x.t().contiguous()
+        laplacian = torch.tensor(
+            [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32
+        )
+        smooth = torch.full((3, 3), 1.0 / 9.0, dtype=torch.float32)
 
-    def _initialise_weights(self) -> None:
-        with torch.no_grad():
-            sobel_x = torch.tensor(
-                [[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]], dtype=torch.float32
-            )
-            sobel_y = sobel_x.t().contiguous()
-            laplacian = torch.tensor(
-                [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32
-            )
-            smooth = torch.full((3, 3), 1.0 / 9.0, dtype=torch.float32)
+        edge_kernels = torch.stack(
+            [
+                sobel_x / sobel_x.abs().sum(),
+                sobel_y / sobel_y.abs().sum(),
+                laplacian / laplacian.abs().sum().clamp_min(1.0),
+                smooth,
+            ]
+        ).unsqueeze(1)
+        self.register_buffer("edge_kernels", edge_kernels)
 
-            self.edge_conv.weight.zero_()
-            self.edge_conv.weight[0, 0] = sobel_x / sobel_x.abs().sum()
-            self.edge_conv.weight[1, 0] = sobel_y / sobel_y.abs().sum()
-            self.edge_conv.weight[2, 0] = laplacian / laplacian.abs().sum().clamp_min(1.0)
-            self.edge_conv.weight[3, 0] = smooth
+        orientations = [0.0, np.pi / 4.0, np.pi / 2.0, 3.0 * np.pi / 4.0]
+        texture_kernels = []
+        for angle in orientations:
+            kernel = _gabor_kernel(angle)
+            # Blend gradient channels with orientation-sensitive Gabor filters and
+            # inject a small contribution from the Laplacian response so the
+            # activations remain sensitive to fine texture variations.
+            texture_kernels.append(torch.stack([kernel * 0.5, kernel * 0.5, kernel * 0.25, kernel * 0.1]))
+        texture_kernel_tensor = torch.stack(texture_kernels)
+        self.register_buffer("texture_kernels", texture_kernel_tensor)
 
-            orientations = [0.0, np.pi / 4.0, np.pi / 2.0, 3.0 * np.pi / 4.0]
-            self.texture_conv.weight.zero_()
-            for index, angle in enumerate(orientations):
-                kernel = _gabor_kernel(angle)
-                # Blend gradient channels with orientation-sensitive Gabor filters and
-                # inject a small contribution from the Laplacian response so the
-                # activations remain sensitive to fine texture variations.
-                self.texture_conv.weight[index, 0] = kernel * 0.5
-                self.texture_conv.weight[index, 1] = kernel * 0.5
-                self.texture_conv.weight[index, 2] = kernel * 0.25
-                self.texture_conv.weight[index, 3] = kernel * 0.1
-
-            self.orientation_conv.weight.zero_()
-            for index in range(4):
-                self.orientation_conv.weight[index, index, 0, 0] = 1.0
-                self.orientation_conv.weight[index + 4, index, 0, 0] = -1.0
+        orientation_kernels = torch.zeros((8, 4, 1, 1), dtype=torch.float32)
+        for index in range(4):
+            orientation_kernels[index, index, 0, 0] = 1.0
+            orientation_kernels[index + 4, index, 0, 0] = -1.0
+        self.register_buffer("orientation_kernels", orientation_kernels)
 
     def forward(self, luminance: torch.Tensor) -> dict[str, torch.Tensor]:
         """Run the CNN on a luminance map and return intermediate features."""
 
-        conv1 = self.edge_conv(luminance)
+        conv1 = F.conv2d(luminance, self.edge_kernels, padding=1)
         edge_activation = F.relu(conv1)
-        conv2 = self.texture_conv(edge_activation)
+        conv2 = F.conv2d(edge_activation, self.texture_kernels, padding=3)
         texture_activation = F.relu(conv2)
-        conv3 = self.orientation_conv(texture_activation)
+        conv3 = F.conv2d(texture_activation, self.orientation_kernels)
         orientation_activation = F.relu(conv3)
         return {
             "conv1": conv1,

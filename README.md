@@ -104,3 +104,15 @@ print(dict(zip(parameter_names, prediction.squeeze(0).tolist())))
 The resulting dictionary can be fed into your Processing sketch to reproduce the learned
 texture and colour dynamics.
 
+## Post-merge sanity check
+
+To verify that no merge conflict markers remain after integrating branches, run the
+helper script:
+
+```bash
+python scripts/check_merge_conflicts.py
+```
+
+The command scans all tracked files and reports any unresolved Git conflict markers so
+they can be addressed before committing.
+
