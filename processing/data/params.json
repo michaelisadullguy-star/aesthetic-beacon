@@ -1,0 +1,39 @@
+{
+  "canvas": {
+    "width": 960,
+    "height": 960,
+    "smooth": 4,
+    "renderer": "P2D"
+  },
+  "animation": {
+    "timeScale": 0.35,
+    "noiseSpeed": 0.18,
+    "driftSpeed": 0.42
+  },
+  "texture": {
+    "noiseScale": 0.0065,
+    "turbulence": 1.8,
+    "lineFrequency": 2.4,
+    "lineCurvature": 0.85,
+    "contrast": 1.4,
+    "brightness": 1.1,
+    "vignette": 0.42,
+    "grain": 0.08
+  },
+  "background": {
+    "hue": 210,
+    "saturation": 28,
+    "brightness": 18,
+    "alpha": 95
+  },
+  "overlay": {
+    "hueShift": 55,
+    "alpha": 50
+  },
+  "palette": [
+    { "name": "Deep Azure", "h": 208, "s": 72, "b": 92, "a": 100 },
+    { "name": "Magentic Glow", "h": 318, "s": 66, "b": 88, "a": 90 },
+    { "name": "Sunbeam", "h": 42, "s": 92, "b": 96, "a": 80 },
+    { "name": "Seafoam", "h": 168, "s": 50, "b": 94, "a": 75 }
+  ]
+}

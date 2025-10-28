@@ -149,6 +149,30 @@ print(dict(zip(parameter_names, prediction.squeeze(0).tolist())))
 The resulting dictionary can be fed into your Processing sketch to reproduce the learned
 texture and colour dynamics.
 
+## Processing sketch template
+
+The repository also includes a ready-to-run Processing template at
+`processing/DynamicTextureTemplate.pde`. The sketch renders a layered, animated texture
+with continuously shifting colours and relies on the helper function `loadParamsJSON()`
+to load its configuration from `processing/data/params.json` without recompilation.
+
+### Parameter groups
+
+The JSON schema is designed so you can tweak a broad range of stylistic controls:
+
+| Group | Keys | Description |
+| --- | --- | --- |
+| `canvas` | `width`, `height`, `smooth`, `renderer` | Sets sketch dimensions, smoothing level, and renderer (`P2D` or default). |
+| `animation` | `timeScale`, `noiseSpeed`, `driftSpeed` | Adjusts playback speed and the motion of the noise-driven layers. |
+| `texture` | `noiseScale`, `turbulence`, `lineFrequency`, `lineCurvature`, `contrast`, `brightness`, `vignette`, `grain` | Controls multi-octave noise sampling, linear wave interference, brightness, vignette strength, and film-like grain. |
+| `background` | `hue`, `saturation`, `brightness`, `alpha` | Defines the base colour wash behind the animated layers. |
+| `overlay` | `hueShift`, `alpha` | Adds a dynamic overlay tint that subtly shifts hue over time. |
+| `palette` | array of objects with `h`, `s`, `b`, `a` (plus optional `name`) | Declares the HSB palette used to blend multiple colour bands across the texture. |
+
+Press `r` while the sketch is running to reload the JSON file and experiment with new
+looks instantly. An example configuration is provided in `processing/data/params.json` to
+illustrate how the parameters combine to produce rich, non-repetitive colour dynamics.
+
 ## Post-merge sanity check
 
 To verify that no merge conflict markers remain after integrating branches, run the
