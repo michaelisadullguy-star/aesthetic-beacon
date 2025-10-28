@@ -207,8 +207,8 @@ void applyRuntimeParams() {
 }
 
 class SketchParams {
-  int canvasWidth = 960;
-  int canvasHeight = 960;
+  int canvasWidth = 1080;
+  int canvasHeight = 640;
   int cellSize = 24;
 
   float noiseScale = 0.006;

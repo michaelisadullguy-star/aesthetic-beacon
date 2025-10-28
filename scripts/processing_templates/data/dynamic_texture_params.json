@@ -1,6 +1,6 @@
 {
-  "canvasWidth": 960,
-  "canvasHeight": 960,
+  "canvasWidth": 1080,
+  "canvasHeight": 640,
   "cellSize": 24,
   "noiseScale": 0.006,
   "noiseSpeed": 0.18,
