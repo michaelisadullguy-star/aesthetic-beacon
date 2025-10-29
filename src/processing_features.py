@@ -9,15 +9,77 @@ predictor and performs a forward pass to obtain the parameter values.
 from __future__ import annotations
 
 from collections import OrderedDict
+import math
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import OrderedDict as OrderedDictType, Sequence
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torch import nn
-import torch.nn.functional as F
+
+_INT_PARAMETER_NAMES = {
+    "canvasWidth",
+    "canvasHeight",
+    "cellSize",
+    "noiseOctaves",
+    "accentLayers",
+    "overlayBands",
+    "overlayStep",
+    "targetFrameRate",
+    "smoothingSamples",
+}
+
+_RANGE_CONSTRAINTS = {
+    "canvasWidth": (64.0, 4096.0),
+    "canvasHeight": (64.0, 4096.0),
+    "cellSize": (4.0, 512.0),
+    "cellScaleJitter": (0.0, 4.0),
+    "cellRotationJitter": (0.0, math.pi * 2.0),
+    "cellOffsetJitter": (0.0, 5.0),
+    "cornerRadiusJitter": (0.0, 20.0),
+    "palettePhaseJitter": (0.0, 2.0),
+    "noiseScale": (1e-4, 0.05),
+    "noiseSpeed": (0.0, 5.0),
+    "noiseOctaves": (1.0, 8.0),
+    "noiseFalloff": (0.1, 1.0),
+    "colorCycleSpeed": (0.0, 5.0),
+    "paletteSpread": (0.0, 360.0),
+    "saturationJitter": (0.0, 100.0),
+    "brightnessJitter": (0.0, 100.0),
+    "textureDepth": (0.0, 5.0),
+    "fillAlpha": (0.0, 100.0),
+    "cornerRadius": (0.0, 200.0),
+    "accentThreshold": (0.0, 1.0),
+    "accentLayers": (0.0, 12.0),
+    "accentScale": (0.0, 10.0),
+    "accentStrokeWeight": (0.05, 10.0),
+    "accentAlpha": (0.0, 100.0),
+    "accentJitter": (0.0, 2.0),
+    "accentDrift": (0.0, 10.0),
+    "accentPhaseJitter": (0.0, 2.0),
+    "accentRadiusJitter": (0.0, 2.0),
+    "overlayBands": (0.0, 16.0),
+    "overlayNoiseScale": (1e-4, 0.05),
+    "overlayAmplitude": (0.0, 500.0),
+    "overlayAlpha": (0.0, 100.0),
+    "overlaySpeed": (0.0, 5.0),
+    "overlayStep": (1.0, 256.0),
+    "overlayStrokeScale": (0.0, 10.0),
+    "overlayAlphaJitter": (0.0, 2.0),
+    "backgroundHue": (0.0, 360.0),
+    "backgroundSaturation": (0.0, 100.0),
+    "backgroundBrightness": (0.0, 100.0),
+    "backgroundAlpha": (0.0, 100.0),
+    "targetFrameRate": (1.0, 240.0),
+    "smoothingSamples": (1.0, 16.0),
+    "palette_h": (0.0, 360.0),
+    "palette_s": (0.0, 100.0),
+    "palette_b": (0.0, 100.0),
+}
 
 
 def _ensure_image(image: Image.Image | np.ndarray | Path | str) -> Image.Image:
@@ -243,7 +305,11 @@ def compute_processing_parameters(
             raise ValueError("Normaliser statistics are incompatible with the prediction size.")
         prediction = prediction * std + mean
 
-    parameters = OrderedDict((name, float(value)) for name, value in zip(parameter_names, prediction))
+    processed_pairs = []
+    for name, value in zip(parameter_names, prediction):
+        processed_pairs.append((name, _apply_parameter_constraints(name, float(value))))
+
+    parameters = OrderedDict(processed_pairs)
     return parameters  # type: ignore[return-value]
 
 
@@ -252,3 +318,33 @@ __all__ = [
     "compute_processing_parameters",
     "prepare_image_tensor",
 ]
+
+
+def _canonical_parameter_name(name: str) -> str:
+    if name.startswith("palette"):
+        sanitised = re.sub(r"[\[\].]", "_", name)
+        parts = [part for part in sanitised.split("_") if part]
+        if len(parts) >= 2:
+            component = parts[-1].lower()
+            if component in {"h", "s", "b"}:
+                return f"palette_{component}"
+    return name
+
+
+def _apply_parameter_constraints(name: str, value: float) -> float:
+    if not math.isfinite(value):
+        value = 0.0
+
+    canonical = _canonical_parameter_name(name)
+    bounds = _RANGE_CONSTRAINTS.get(canonical)
+    if bounds is not None:
+        lower, upper = bounds
+        if lower is not None:
+            value = max(value, lower)
+        if upper is not None:
+            value = min(value, upper)
+
+    if canonical in _INT_PARAMETER_NAMES:
+        value = float(int(round(value)))
+
+    return value

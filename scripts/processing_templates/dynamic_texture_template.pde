@@ -8,6 +8,8 @@
 SketchParams params = new SketchParams();
 String PARAM_FILE = "data/dynamic_texture_params.json";
 boolean sketchReady = false;
+ArrayList<CellData> cellGrid = new ArrayList<CellData>();
+ArrayList<OverlayBandData> overlayBandData = new ArrayList<OverlayBandData>();
 
 void settings() {
   loadParamsJSON();
@@ -36,53 +38,73 @@ void draw() {
   noStroke();
   rectMode(CENTER);
 
-  for (int y = 0; y < height; y += params.cellSize) {
-    for (int x = 0; x < width; x += params.cellSize) {
-      float nx = x * params.noiseScale;
-      float ny = y * params.noiseScale;
-      float n = noise(nx, ny, noiseTime);
+  if (cellGrid.size() == 0) {
+    buildCellGrid();
+  }
 
-      color texColour = samplePalette(n, paletteTime);
-      float alpha = params.fillAlpha;
-      fill(hue(texColour), saturation(texColour), brightness(texColour), alpha);
+  if (overlayBandData.size() == 0 && params.overlayBands > 0) {
+    buildOverlayBands();
+  }
 
-      pushMatrix();
-      translate(x + params.cellSize * 0.5, y + params.cellSize * 0.5);
-      float angle = (n - 0.5) * PI * params.textureDepth;
-      rotate(angle);
+  for (CellData cell : cellGrid) {
+    float noiseValue = noise(cell.noiseX, cell.noiseY, noiseTime);
+    float paletteSample = fract(noiseValue + cell.paletteSeed * params.palettePhaseJitter + sin(paletteTime + cell.paletteSeed * TWO_PI) * 0.1);
+    color texColour = samplePalette(paletteSample, paletteTime + cell.paletteSeed * params.palettePhaseJitter * TWO_PI);
 
-      float widthScale = 0.65 + n * params.textureDepth;
-      float heightScale = 0.75 + sin(paletteTime + n * TWO_PI) * 0.25;
-      float rectWidth = params.cellSize * widthScale;
-      float rectHeight = params.cellSize * heightScale;
-      rect(0, 0, rectWidth, rectHeight, params.cornerRadius);
+    float alphaOsc = 0.75 + 0.25 * sin(paletteTime * 1.1 + cell.paletteSeed * TWO_PI);
+    float alpha = params.fillAlpha * alphaOsc;
+    fill(hue(texColour), saturation(texColour), brightness(texColour), alpha);
 
-      if (n > params.accentThreshold) {
-        drawAccentLayer(n, paletteTime);
-      }
-      popMatrix();
+    float offsetAngle = paletteTime * 0.8 + cell.offsetSeed * TWO_PI;
+    float offsetRadius = params.cellOffsetJitter * params.cellSize * sin(paletteTime + cell.offsetSeed * TWO_PI);
+    float px = cell.centerX + cos(offsetAngle) * offsetRadius;
+    float py = cell.centerY + sin(offsetAngle) * offsetRadius;
+
+    pushMatrix();
+    translate(px, py);
+    float baseAngle = (noiseValue - 0.5) * PI * params.textureDepth;
+    float angle = baseAngle + cell.rotationSeed * params.cellRotationJitter;
+    rotate(angle);
+
+    float widthScale = 0.7 + noiseValue * params.textureDepth + cell.widthJitter * params.cellScaleJitter;
+    float heightScale = 0.7 + cos(paletteTime + noiseValue * PI) * 0.3 + cell.heightJitter * params.cellScaleJitter;
+    float rectWidth = params.cellSize * max(0.25, widthScale);
+    float rectHeight = params.cellSize * max(0.25, heightScale);
+    float corner = max(0, params.cornerRadius + cell.widthJitter * params.cornerRadiusJitter);
+    rect(0, 0, rectWidth, rectHeight, corner);
+
+    if (noiseValue > params.accentThreshold) {
+      drawAccentLayer(noiseValue, paletteTime, cell);
     }
+    popMatrix();
   }
 
   drawNoiseOverlay(timeSeconds);
 }
 
 void drawNoiseOverlay(float timeSeconds) {
+  if (overlayBandData.size() == 0) {
+    return;
+  }
+
   pushStyle();
   blendMode(ADD);
   noFill();
-  float overlayAlpha = params.overlayAlpha;
-  for (int i = 0; i < params.overlayBands; i++) {
-    float t = (float) i / max(1, params.overlayBands - 1);
-    float noiseOffset = noise(timeSeconds * params.overlaySpeed, t * 10.0);
-    color bandColour = samplePalette((t + noiseOffset) % 1.0, timeSeconds);
-    stroke(hue(bandColour), saturation(bandColour), brightness(bandColour), overlayAlpha);
-    strokeWeight(1.0 + t * params.overlayStrokeScale);
+  for (OverlayBandData band : overlayBandData) {
+    float timePhase = timeSeconds * params.overlaySpeed + band.noiseShift;
+    float noiseOffset = noise(timePhase, band.offsetSeed * 11.0);
+    float paletteSample = fract(band.position + noiseOffset + band.offsetSeed);
+    color bandColour = samplePalette(paletteSample, timeSeconds + band.offsetSeed * params.overlayAlphaJitter * TWO_PI);
 
-    float yBase = height * (t + 0.05f * sin(TWO_PI * (t + timeSeconds * params.overlaySpeed)));
+    float alphaOsc = 0.65 + 0.35 * sin(timeSeconds * 0.7 + band.offsetSeed * TWO_PI);
+    float strokeAlpha = params.overlayAlpha * alphaOsc;
+    stroke(hue(bandColour), saturation(bandColour), brightness(bandColour), strokeAlpha);
+    strokeWeight(1.0 + band.strokeSeed * params.overlayStrokeScale);
+
+    float yBase = height * (band.position + 0.05f * sin(TWO_PI * (band.position + timePhase + band.offsetSeed)));
     beginShape();
     for (int x = 0; x < width; x += params.overlayStep) {
-      float distort = noise(x * params.overlayNoiseScale, t * params.overlayNoiseScale, timeSeconds);
+      float distort = noise(x * params.overlayNoiseScale, band.position * params.overlayNoiseScale, timePhase + band.noiseShift);
       float y = yBase + map(distort, 0, 1, -params.overlayAmplitude, params.overlayAmplitude);
       curveVertex(x, y);
     }
@@ -91,21 +113,24 @@ void drawNoiseOverlay(float timeSeconds) {
   popStyle();
 }
 
-void drawAccentLayer(float noiseValue, float paletteTime) {
+void drawAccentLayer(float noiseValue, float paletteTime, CellData cell) {
   pushStyle();
   noFill();
   strokeWeight(params.accentStrokeWeight);
 
   for (int layer = 0; layer < params.accentLayers; layer++) {
     float blend = (float) layer / max(1, params.accentLayers - 1);
-    float samplePoint = (noiseValue + blend * params.accentJitter) % 1.0;
-    color c = samplePalette(samplePoint, paletteTime + blend);
-    float alpha = params.accentAlpha * (0.6 + 0.4 * sin(paletteTime + blend * TWO_PI));
+    float samplePoint = fract(noiseValue + blend * params.accentJitter + cell.accentSeed);
+    color c = samplePalette(samplePoint, paletteTime + blend + cell.accentSeed * params.accentPhaseJitter * TWO_PI);
+    float phase = paletteTime * 0.9 + blend * TWO_PI + cell.accentSeed * params.accentPhaseJitter * TWO_PI;
+    float alpha = params.accentAlpha * (0.55 + 0.45 * sin(phase));
     stroke(hue(c), saturation(c), brightness(c), alpha);
 
-    float radius = params.cellSize * (1.0 + blend * params.accentScale);
-    float offset = (noiseValue - 0.5) * params.accentDrift * params.cellSize;
-    ellipse(offset, offset, radius, radius * (0.7 + 0.3 * cos(paletteTime + blend * PI)));
+    float radiusBase = params.cellSize * (1.0 + blend * params.accentScale);
+    float radius = radiusBase * (0.9 + 0.2 * sin(phase + cell.rotationSeed));
+    float offset = (noiseValue - 0.5) * params.accentDrift * params.cellSize + cell.rotationSeed * params.accentRadiusJitter * params.cellSize * 0.5;
+    float skew = 0.7 + 0.3 * cos(phase + cell.offsetSeed * TWO_PI);
+    ellipse(offset, offset * skew, radius, radius * skew);
   }
   popStyle();
 }
@@ -204,12 +229,121 @@ void applyRuntimeParams() {
   smooth(params.smoothingSamples);
   frameRate(params.targetFrameRate);
   noiseDetail(params.noiseOctaves, params.noiseFalloff);
+  preparePrecomputedAssets();
+}
+
+void preparePrecomputedAssets() {
+  buildCellGrid();
+  buildOverlayBands();
+}
+
+void buildCellGrid() {
+  cellGrid = new ArrayList<CellData>();
+
+  int gridWidth = width > 0 ? width : params.canvasWidth;
+  int gridHeight = height > 0 ? height : params.canvasHeight;
+  int maxWidth = max(gridWidth, params.cellSize);
+  int maxHeight = max(gridHeight, params.cellSize);
+
+  for (int y = 0; y < maxHeight; y += params.cellSize) {
+    for (int x = 0; x < maxWidth; x += params.cellSize) {
+      if (x >= gridWidth || y >= gridHeight) {
+        continue;
+      }
+
+      CellData cell = new CellData();
+      cell.centerX = x + params.cellSize * 0.5;
+      cell.centerY = y + params.cellSize * 0.5;
+      cell.noiseX = x * params.noiseScale;
+      cell.noiseY = y * params.noiseScale;
+
+      cell.widthJitter = signedRandom(pseudoRandom(x, y, 11.0));
+      cell.heightJitter = signedRandom(pseudoRandom(x, y, 19.0));
+      cell.rotationSeed = signedRandom(pseudoRandom(x, y, 23.0));
+      cell.offsetSeed = pseudoRandom(x, y, 31.0);
+      cell.paletteSeed = pseudoRandom(x, y, 47.0);
+      cell.accentSeed = pseudoRandom(x, y, 59.0);
+
+      cellGrid.add(cell);
+    }
+  }
+
+  if (cellGrid.size() == 0) {
+    CellData cell = new CellData();
+    int fallbackWidth = width > 0 ? width : params.canvasWidth;
+    int fallbackHeight = height > 0 ? height : params.canvasHeight;
+    cell.centerX = fallbackWidth * 0.5;
+    cell.centerY = fallbackHeight * 0.5;
+    cell.noiseX = cell.centerX * params.noiseScale;
+    cell.noiseY = cell.centerY * params.noiseScale;
+    cell.widthJitter = 0;
+    cell.heightJitter = 0;
+    cell.rotationSeed = 0;
+    cell.offsetSeed = 0.5;
+    cell.paletteSeed = 0.3;
+    cell.accentSeed = 0.8;
+    cellGrid.add(cell);
+  }
+}
+
+void buildOverlayBands() {
+  overlayBandData = new ArrayList<OverlayBandData>();
+  if (params.overlayBands <= 0) {
+    return;
+  }
+
+  for (int i = 0; i < params.overlayBands; i++) {
+    OverlayBandData band = new OverlayBandData();
+    band.position = params.overlayBands == 1 ? 0.5 : (float) i / (float) (params.overlayBands - 1);
+    band.offsetSeed = pseudoRandom(i, params.overlayBands, 71.0);
+    band.strokeSeed = 0.5 + 0.5 * signedRandom(pseudoRandom(i, params.overlayBands, 83.0));
+    band.noiseShift = pseudoRandom(i, params.overlayBands, 97.0) * 8.0;
+    overlayBandData.add(band);
+  }
+}
+
+float fract(float value) {
+  return value - floor(value);
+}
+
+float signedRandom(float r) {
+  return r * 2.0 - 1.0;
+}
+
+float pseudoRandom(float x, float y, double salt) {
+  float v = sin((float) ((x + salt) * 12.9898 + (y - salt) * 78.233));
+  return fract(v * 43758.5453f);
+}
+
+class CellData {
+  float centerX;
+  float centerY;
+  float noiseX;
+  float noiseY;
+  float widthJitter;
+  float heightJitter;
+  float rotationSeed;
+  float offsetSeed;
+  float paletteSeed;
+  float accentSeed;
+}
+
+class OverlayBandData {
+  float position;
+  float offsetSeed;
+  float strokeSeed;
+  float noiseShift;
 }
 
 class SketchParams {
   int canvasWidth = 1080;
   int canvasHeight = 640;
   int cellSize = 24;
+  float cellScaleJitter = 0.35;
+  float cellRotationJitter = 0.5;
+  float cellOffsetJitter = 0.28;
+  float cornerRadiusJitter = 2.5;
+  float palettePhaseJitter = 0.25;
 
   float noiseScale = 0.006;
   float noiseSpeed = 0.2;
@@ -232,6 +366,8 @@ class SketchParams {
   float accentAlpha = 45;
   float accentJitter = 0.35;
   float accentDrift = 0.45;
+  float accentPhaseJitter = 0.35;
+  float accentRadiusJitter = 0.35;
 
   int overlayBands = 5;
   float overlayNoiseScale = 0.004;
@@ -240,6 +376,7 @@ class SketchParams {
   float overlaySpeed = 0.35;
   int overlayStep = 16;
   float overlayStrokeScale = 3.0;
+  float overlayAlphaJitter = 0.35;
 
   float backgroundHue = 210;
   float backgroundSaturation = 18;
@@ -262,6 +399,11 @@ class SketchParams {
     canvasWidth = readInt(json, "canvasWidth", canvasWidth);
     canvasHeight = readInt(json, "canvasHeight", canvasHeight);
     cellSize = readInt(json, "cellSize", cellSize);
+    cellScaleJitter = readFloat(json, "cellScaleJitter", cellScaleJitter);
+    cellRotationJitter = readFloat(json, "cellRotationJitter", cellRotationJitter);
+    cellOffsetJitter = readFloat(json, "cellOffsetJitter", cellOffsetJitter);
+    cornerRadiusJitter = readFloat(json, "cornerRadiusJitter", cornerRadiusJitter);
+    palettePhaseJitter = readFloat(json, "palettePhaseJitter", palettePhaseJitter);
 
     noiseScale = readFloat(json, "noiseScale", noiseScale);
     noiseSpeed = readFloat(json, "noiseSpeed", noiseSpeed);
@@ -284,6 +426,8 @@ class SketchParams {
     accentAlpha = readFloat(json, "accentAlpha", accentAlpha);
     accentJitter = readFloat(json, "accentJitter", accentJitter);
     accentDrift = readFloat(json, "accentDrift", accentDrift);
+    accentPhaseJitter = readFloat(json, "accentPhaseJitter", accentPhaseJitter);
+    accentRadiusJitter = readFloat(json, "accentRadiusJitter", accentRadiusJitter);
 
     overlayBands = readInt(json, "overlayBands", overlayBands);
     overlayNoiseScale = readFloat(json, "overlayNoiseScale", overlayNoiseScale);
@@ -292,6 +436,7 @@ class SketchParams {
     overlaySpeed = readFloat(json, "overlaySpeed", overlaySpeed);
     overlayStep = readInt(json, "overlayStep", overlayStep);
     overlayStrokeScale = readFloat(json, "overlayStrokeScale", overlayStrokeScale);
+    overlayAlphaJitter = readFloat(json, "overlayAlphaJitter", overlayAlphaJitter);
 
     backgroundHue = readFloat(json, "backgroundHue", backgroundHue);
     backgroundSaturation = readFloat(json, "backgroundSaturation", backgroundSaturation);
