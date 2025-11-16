@@ -29,7 +29,7 @@ import torch
 from tqdm import tqdm
 
 # Import pipeline functions
-from pipeline import (
+from .pipeline import (
     # Step 1
     decode_hex_eeg_segment,
     iter_brainwave_segments,
@@ -50,7 +50,7 @@ from pipeline import (
 )
 
 # Import OSC bridge
-from osc_bridge import create_bridge, OSCConfig
+from .osc_bridge import create_bridge, OSCConfig
 
 # Configure logging
 logging.basicConfig(
@@ -290,8 +290,8 @@ class WorkflowOrchestrator:
             logger.info("Please run --step 2 --train first")
             return
 
-        from model import create_model
-        from pipeline import ViewerEnjoymentModel
+        from .model import create_model
+        from .pipeline import ViewerEnjoymentModel
 
         model = ViewerEnjoymentModel()
         model.load_state_dict(torch.load(model_path, map_location=self.device))
@@ -458,7 +458,7 @@ class WorkflowOrchestrator:
             return
 
         # Load creator model
-        from pipeline import CreatorStateModel
+        from .pipeline import CreatorStateModel
         creator_model = CreatorStateModel()
         creator_model.load_state_dict(torch.load(creator_model_path, map_location=self.device))
         creator_model = creator_model.to(self.device)
@@ -466,7 +466,7 @@ class WorkflowOrchestrator:
 
         # Load parameter model
         checkpoint = torch.load(parameter_model_path, map_location=self.device)
-        from model import BrainwaveToProcessingModel
+        from .model import BrainwaveToProcessingModel
         parameter_model = BrainwaveToProcessingModel(
             num_params=len(checkpoint['param_names'])
         )

@@ -1,0 +1,15 @@
+# Development dependencies for aesthetic-beacon
+-r requirements.txt
+
+# OSC support for real-time communication with Processing
+python-osc>=1.8.0
+
+# Code quality and testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+flake8>=6.0.0
+black>=23.0.0
+mypy>=1.0.0
+
+# Documentation
+sphinx>=6.0.0
