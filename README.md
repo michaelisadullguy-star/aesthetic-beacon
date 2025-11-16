@@ -1,23 +1,84 @@
 # Aesthetic Beacon
 
-This project provides a PyTorch-based training pipeline for mapping five-second brainwave
-segments to Processing sketch parameters that capture artwork texture and colour
-characteristics.
+**EEG-Based Creative Feedback System**
 
-## Project structure
+Aesthetic Beacon is a complete workflow for using EEG brainwave data to create real-time creative feedback. The system learns from participants' aesthetic responses to generate dynamic visuals that respond to a creator's brainwave patterns.
 
-- `src/brainwave_dataset.py` &ndash; Dataset utilities for loading EEG recordings stored as
-  8&times;3200 tensors (`.npy` files) and deriving Processing parameters from paired
-  artwork images.
-- `src/model.py` &ndash; Neural network modules that encode the temporal signals and regress
-  Processing-ready descriptors.
-- `src/train.py` &ndash; Command-line training entry point that ties the dataset and model
-  together.
-- `src/processing_features.py` &ndash; Image analysis helpers plus the
-  `ProcessingParameterPredictor`, a trainable convolutional model that maps
-  artworks to Processing-friendly parameter vectors.
-- `src/train_processing_features.py` &ndash; Command-line utility used to train the
-  artwork-to-Processing predictor on curated image/parameter pairs.
+## Quick Links
+
+- **[Complete Workflow Guide](WORKFLOW.md)** - Detailed step-by-step instructions
+- **[Data Directory Structure](data/README.md)** - Understanding the data organization
+- **[Example Configuration](config.example.json)** - Template for custom configs
+
+## What This System Does
+
+1. **Measures aesthetic enjoyment** from EEG during music listening
+2. **Identifies excellent passages** in written content based on reader EEG
+3. **Detects creative states** in the creator's brainwaves
+4. **Maps brainwaves to visuals** using Processing parameters
+5. **Provides real-time feedback** by updating visuals when creator is in flow state
+
+## Quick Start
+
+```bash
+# 1. Generate test data
+python scripts/generate_test_data.py --output data/
+
+# 2. Train models
+python src/workflow_orchestrator.py --step 2 --train  # Viewer model
+python src/workflow_orchestrator.py --step 4 --train  # Creator model
+python src/workflow_orchestrator.py --step 5 --train  # Parameter model
+
+# 3. Run real-time feedback
+# First, open scripts/processing_templates/dynamic_texture_osc.pde in Processing
+# Then:
+python src/workflow_orchestrator.py --step 6 --realtime
+```
+
+For detailed instructions, see **[WORKFLOW.md](WORKFLOW.md)**.
+
+## The 6-Step Workflow
+
+This project provides a PyTorch-based pipeline with six integrated steps:
+
+1. **Hex EEG Conversion** - Convert raw hexadecimal EEG to numpy arrays
+2. **Viewer Model Training** - Learn aesthetic enjoyment patterns from EEG + audio
+3. **Article Evaluation** - Identify best passages using reader EEG responses
+4. **Creator Model Training** - Detect "creatable" brainwave states
+5. **Parameter Model Training** - Map EEG to Processing visual parameters
+6. **Real-Time Feedback** - Update visuals based on creator's brainwave state
+
+## Project Structure
+
+### Core Pipeline (`src/`)
+- `pipeline.py` - Complete 6-step workflow implementation (all steps integrated)
+- `workflow_orchestrator.py` - Command-line orchestrator for running any step
+- `osc_bridge.py` - Python → Processing communication via OSC
+- `brainwave_dataset.py` - Dataset utilities for EEG data loading
+- `model.py` - Neural network architectures (temporal encoding, regression)
+- `processing_features.py` - Image → Processing parameter prediction
+
+### Training Scripts (`src/`)
+- `train.py` - Train brainwave → Processing parameters model
+- `train_processing_features.py` - Train artwork → Processing parameters model
+
+### Utilities (`scripts/`)
+- `generate_test_data.py` - Generate synthetic data for testing
+- `processing_templates/dynamic_texture_template.pde` - Base Processing sketch
+- `processing_templates/dynamic_texture_osc.pde` - OSC-enabled Processing sketch
+
+### Data Organization (`data/`)
+```
+data/
+├── step1_hex_eeg/           # Raw hex EEG files
+├── step2_viewer_training/   # EEG + audio + enjoyment labels
+├── step3_article_reading/   # Article reading EEG sessions
+├── step4_creator_training/  # Creator EEG + annotations
+├── step5_image_training/    # EEG + images + parameters
+└── step6_realtime/
+    ├── models/              # Trained model checkpoints
+    └── outputs/             # Generated parameters
+```
 
 ## Preparing the dataset
 

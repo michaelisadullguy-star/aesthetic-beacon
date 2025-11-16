@@ -1,0 +1,66 @@
+{
+  "description": "Example configuration for Aesthetic Beacon workflow",
+
+  "data_root": "data",
+  "model_dir": "data/step6_realtime/models",
+  "output_dir": "data/step6_realtime/outputs",
+
+  "step1": {
+    "hex_dir": "data/step1_hex_eeg",
+    "output_dir": "data/step1_hex_eeg/converted",
+    "sample_rate": 640,
+    "num_channels": 8
+  },
+
+  "step2": {
+    "eeg_dir": "data/step2_viewer_training/eeg",
+    "audio_dir": "data/step2_viewer_training/audio",
+    "annotations": "data/step2_viewer_training/annotations/annotations.json",
+    "model_path": "data/step6_realtime/models/viewer_model.pt",
+    "epochs": 50,
+    "batch_size": 16,
+    "learning_rate": 0.0001,
+    "validation_split": 0.2
+  },
+
+  "step3": {
+    "eeg_dir": "data/step3_article_reading/eeg",
+    "results_dir": "data/step3_article_reading/results",
+    "viewer_model": "data/step6_realtime/models/viewer_model.pt",
+    "window_size": 5.0,
+    "stride": 1.0
+  },
+
+  "step4": {
+    "eeg_dir": "data/step4_creator_training/eeg",
+    "annotations": "data/step4_creator_training/annotations/annotations.json",
+    "model_path": "data/step6_realtime/models/creator_model.pt",
+    "epochs": 50,
+    "batch_size": 16,
+    "learning_rate": 0.0001,
+    "validation_split": 0.2
+  },
+
+  "step5": {
+    "dataset_root": "data/step5_image_training",
+    "model_path": "data/step6_realtime/models/parameter_model.pt",
+    "epochs": 100,
+    "batch_size": 8,
+    "learning_rate": 0.001,
+    "hidden_channels": 128,
+    "num_blocks": 4,
+    "dropout": 0.1
+  },
+
+  "step6": {
+    "creator_model": "data/step6_realtime/models/creator_model.pt",
+    "parameter_model": "data/step6_realtime/models/parameter_model.pt",
+    "creatable_threshold": 0.6,
+    "update_interval": 5.0,
+    "use_osc": true,
+    "osc_host": "127.0.0.1",
+    "osc_port": 12000
+  },
+
+  "device": "cuda"
+}
