@@ -119,10 +119,16 @@ def parse_args() -> argparse.Namespace:
         help="Number of temporal samples per channel (3200 for five seconds at 640 Hz).",
     )
     parser.add_argument(
+        "--parameter-metadata",
+        type=Path,
+        default=None,
+        help="Path to JSON file with ground truth parameter annotations (recommended for static training).",
+    )
+    parser.add_argument(
         "--processing-weights",
         type=Path,
-        required=True,
-        help="Path to the trained artwork preprocessing model checkpoint.",
+        default=None,
+        help="Path to the trained artwork preprocessing model checkpoint (used if --parameter-metadata not provided).",
     )
     return parser.parse_args()
 
@@ -220,12 +226,20 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
 
+    # Validate that either parameter_metadata or processing_weights is provided
+    if args.parameter_metadata is None and args.processing_weights is None:
+        raise ValueError(
+            "Either --parameter-metadata or --processing-weights must be provided. "
+            "Use --parameter-metadata for ground truth (recommended) or --processing-weights for CNN-based training."
+        )
+
     transforms = create_transforms(args)
     dataset = BrainwaveProcessingDataset(
         args.dataset,
         transform=transforms,
         expected_channels=args.expected_channels,
         expected_samples=args.expected_samples,
+        parameter_metadata=args.parameter_metadata,
         processing_weights=args.processing_weights,
         processing_device=args.device,
     )

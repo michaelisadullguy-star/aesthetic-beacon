@@ -1,9 +1,10 @@
 """Dataset utilities for brainwave-to-Processing parameter mapping."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -32,15 +33,23 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 <sample_id>.npy
             artworks/
                 <sample_id>.<ext>
+            metadata.json  (optional)
 
     ``artworks`` should contain an RGB image for each brainwave segment. The file name
     (without the extension) must match the ``sample_id`` of the corresponding
     brainwave recording. Supported artwork extensions are ``.png``, ``.jpg``,
     ``.jpeg`` and ``.bmp``. Brainwave recordings must be stored as NumPy ``.npy``
     tensors with shape ``(8, 3200)`` representing five seconds of activity sampled
-    across eight bands. Processing parameters are derived automatically from the artwork using
-    :func:`~src.processing_features.compute_processing_parameters` when the dataset is
-    instantiated.
+    across eight bands.
+
+    Processing parameters can be provided in two ways:
+
+    1. **Ground Truth (Recommended)**: Provide a ``metadata.json`` file with ground truth
+       parameter annotations for each artwork. This creates a direct static mapping from
+       images to parameters, avoiding dynamic CNN-based generation.
+    2. **CNN-based (Legacy)**: If no metadata is provided, parameters are derived
+       automatically from artworks using the trained CNN model via
+       :func:`~src.processing_features.compute_processing_parameters`.
 
     Parameters
     ----------
@@ -59,13 +68,20 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     expected_samples : int, default 3200
         Number of temporal samples expected per channel. Set to ``0`` to disable the
         length check while keeping channel validation.
-    processing_weights : Path or str
+    parameter_metadata : Path or str, optional
+        Path to a JSON file containing ground truth parameter annotations for each
+        artwork. If provided, parameters are loaded from this file instead of being
+        computed via the CNN model. The JSON should map sample IDs to parameter dicts.
+    processing_weights : Path or str, optional
         Path to the trained artwork-to-Processing parameter model checkpoint used
-        to derive targets from the artwork images.
+        to derive targets from the artwork images. Only required if parameter_metadata
+        is not provided.
     processing_device : str or torch.device, optional
         Device on which the preprocessing model is executed. Defaults to CPU.
+        Only used when parameter_metadata is not provided.
     processing_resize_long_edge : int, optional
         Optional resize applied before preprocessing. ``None`` disables resizing.
+        Only used when parameter_metadata is not provided.
     """
 
     def __init__(
@@ -77,7 +93,8 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         expected_channels: int = 8,
         expected_samples: int = 3200,
         *,
-        processing_weights: Path | str,
+        parameter_metadata: Path | str | None = None,
+        processing_weights: Path | str | None = None,
         processing_device: str | torch.device | None = None,
         processing_resize_long_edge: int | None = 512,
     ) -> None:
@@ -89,13 +106,54 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.expected_channels = expected_channels
         self.expected_samples = expected_samples
 
-        self.processing_weights = Path(processing_weights).expanduser().resolve()
-        if not self.processing_weights.exists():
-            raise FileNotFoundError(
-                f"Processing weights not found at '{self.processing_weights}'. Train the artwork model first."
-            )
-        self.processing_device = processing_device
-        self.processing_resize_long_edge = processing_resize_long_edge
+        # Determine parameter source: ground truth metadata or CNN inference
+        self.parameter_metadata_path = None
+        self.use_metadata = False
+        self.ground_truth_parameters: Dict[str, Dict[str, float]] = {}
+
+        if parameter_metadata is not None:
+            self.parameter_metadata_path = Path(parameter_metadata).expanduser().resolve()
+            if not self.parameter_metadata_path.exists():
+                raise FileNotFoundError(
+                    f"Parameter metadata not found at '{self.parameter_metadata_path}'."
+                )
+            self.use_metadata = True
+            # Load ground truth parameters
+            with self.parameter_metadata_path.open("r", encoding="utf8") as f:
+                metadata_content = json.load(f)
+
+            # Parse metadata format (support both dict and list formats)
+            if isinstance(metadata_content, dict):
+                self.ground_truth_parameters = {
+                    str(k): v for k, v in metadata_content.items()
+                }
+            elif isinstance(metadata_content, list):
+                for entry in metadata_content:
+                    if not isinstance(entry, dict):
+                        raise ValueError("List metadata entries must be objects.")
+                    sample_id = entry.get("id") or entry.get("image")
+                    if not sample_id:
+                        raise ValueError("Metadata entries must include 'id' or 'image' field.")
+                    params = entry.get("parameters")
+                    if not isinstance(params, dict):
+                        raise ValueError("Each entry must have a 'parameters' dict.")
+                    self.ground_truth_parameters[str(sample_id)] = params
+            else:
+                raise ValueError("Metadata must be a JSON object or array.")
+        else:
+            # Fall back to CNN-based parameter generation
+            if processing_weights is None:
+                raise ValueError(
+                    "Either parameter_metadata or processing_weights must be provided."
+                )
+            self.processing_weights = Path(processing_weights).expanduser().resolve()
+            if not self.processing_weights.exists():
+                raise FileNotFoundError(
+                    f"Processing weights not found at '{self.processing_weights}'. "
+                    "Train the artwork model first or provide parameter_metadata."
+                )
+            self.processing_device = processing_device
+            self.processing_resize_long_edge = processing_resize_long_edge
 
         self.brainwave_dir = self.root / "brainwaves"
         if not self.brainwave_dir.exists():
@@ -126,6 +184,8 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             )
 
         missing_artworks: List[str] = []
+        missing_parameters: List[str] = []
+
         for sample_id in sorted(brainwave_paths.keys()):
             brainwave_path = brainwave_paths[sample_id]
             candidates = sorted(
@@ -139,12 +199,22 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 missing_artworks.append(sample_id)
                 continue
 
-            parameter_dict = compute_processing_parameters(
-                image_path,
-                weights_path=self.processing_weights,
-                resize_long_edge=self.processing_resize_long_edge,
-                device=self.processing_device,
-            )
+            # Get parameters: from ground truth metadata or CNN inference
+            if self.use_metadata:
+                # Use ground truth parameters from metadata
+                if sample_id not in self.ground_truth_parameters:
+                    missing_parameters.append(sample_id)
+                    continue
+                parameter_dict = self.ground_truth_parameters[sample_id]
+            else:
+                # Fall back to CNN-based inference
+                parameter_dict = compute_processing_parameters(
+                    image_path,
+                    weights_path=self.processing_weights,
+                    resize_long_edge=self.processing_resize_long_edge,
+                    device=self.processing_device,
+                )
+
             if parameter_names is None:
                 parameter_names = tuple(parameter_dict.keys())
             else:
@@ -173,12 +243,24 @@ class BrainwaveProcessingDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 f"Missing artwork images for the following samples: {missing_formatted}"
             )
 
+        if missing_parameters:
+            missing_formatted = ", ".join(missing_parameters)
+            raise FileNotFoundError(
+                f"Missing ground truth parameters in metadata for the following samples: {missing_formatted}"
+            )
+
         if not self.samples:
             raise ValueError(
                 "The dataset is empty after processing artworks. Ensure each brainwave file has a matching image."
             )
 
         self.parameter_names = parameter_names or ()
+
+        # Log which parameter source was used
+        if self.use_metadata:
+            print(f"Loaded {len(self.samples)} samples using ground truth parameters from metadata.")
+        else:
+            print(f"Loaded {len(self.samples)} samples using CNN-generated parameters.")
 
     def __len__(self) -> int:
         return len(self.samples)
