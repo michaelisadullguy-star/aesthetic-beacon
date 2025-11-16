@@ -1,0 +1,16 @@
+# Core dependencies for aesthetic-beacon
+# Deep learning framework
+torch>=2.0.0
+
+# Numerical computing
+numpy>=1.24.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Optional: OSC (Open Sound Control) support for real-time communication
+# Install with: pip install aesthetic-beacon[osc]
+# python-osc>=1.8.0

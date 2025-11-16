@@ -352,6 +352,7 @@ def _prepare_eeg_batch(eeg: Tensor) -> Tensor:
 def train_viewer_model(
     dataset: ViewerEnjoymentDataset,
     *,
+    val_dataset: Optional[ViewerEnjoymentDataset] = None,
     epochs: int = 30,
     batch_size: int = 16,
     learning_rate: float = 1e-3,
@@ -359,17 +360,38 @@ def train_viewer_model(
     validation_split: float = 0.2,
     device: str | torch.device | None = None,
 ) -> Tuple[ViewerEnjoymentModel, TrainingHistory]:
-    """Train the *to viewer* model from EEG/audio pairs."""
+    """Train the *to viewer* model from EEG/audio pairs.
+
+    Args:
+        dataset: Training dataset
+        val_dataset: Optional validation dataset. If provided, validation_split is ignored.
+        epochs: Number of training epochs
+        batch_size: Batch size for training
+        learning_rate: Learning rate for optimizer
+        weight_decay: Weight decay for regularization
+        validation_split: Fraction of dataset to use for validation (ignored if val_dataset provided)
+        device: Device to train on
+
+    Returns:
+        Trained model and training history
+    """
 
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    total_samples = len(dataset)
-    val_size = int(total_samples * validation_split)
-    train_size = total_samples - val_size
-    if val_size > 0:
-        train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
-    else:
+
+    if val_dataset is not None:
+        # Use provided validation dataset
         train_subset = dataset
-        val_subset = None
+        val_subset = val_dataset
+    else:
+        # Split the dataset
+        total_samples = len(dataset)
+        val_size = int(total_samples * validation_split)
+        train_size = total_samples - val_size
+        if val_size > 0:
+            train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        else:
+            train_subset = dataset
+            val_subset = None
 
     def create_loader(subset: Dataset[Tuple[Tensor, Tensor, Tensor]]) -> DataLoader:
         return DataLoader(subset, batch_size=batch_size, shuffle=True, drop_last=False)
