@@ -30,6 +30,7 @@ individually in different research workflows.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
@@ -208,39 +209,69 @@ def compute_log_mel_spectrogram(
 
 @dataclass(frozen=True)
 class ViewerSample:
-    """Container bundling EEG, audio, and enjoyment label."""
+    """Container bundling EEG, audio paths, and enjoyment label for dataset construction."""
 
-    eeg: Tensor  # shape (channels, samples)
-    audio: Tensor  # log-mel spectrogram with shape (mels, frames)
-    label: float  # 1.0 = enjoyed, 0.0 = not enjoyed
+    brainwave_path: Path | str
+    audio_path: Path | str
+    enjoyed: bool
 
 
 class ViewerEnjoymentDataset(Dataset[Tuple[Tensor, Tensor, Tensor]]):
     """Dataset providing paired EEG/audio segments with enjoyment labels."""
 
-    def __init__(self, samples: Sequence[ViewerSample]) -> None:
+    def __init__(
+        self,
+        samples: Sequence[ViewerSample],
+        *,
+        audio_sample_rate: int = 44100,
+        n_fft: int = 1024,
+        hop_length: int = 320,
+        n_mels: int = 64,
+    ) -> None:
         if not samples:
             raise ValueError("ViewerEnjoymentDataset requires at least one sample.")
         self.samples = list(samples)
-        self.eeg_channels = samples[0].eeg.shape[0]
-        self.eeg_length = samples[0].eeg.shape[1]
-        self.audio_mels = samples[0].audio.shape[0]
-        self.audio_frames = samples[0].audio.shape[1]
-        for sample in self.samples:
-            if sample.eeg.shape != (self.eeg_channels, self.eeg_length):
-                raise ValueError("All EEG tensors must share the same shape.")
-            if sample.audio.shape != (self.audio_mels, self.audio_frames):
-                raise ValueError("All audio tensors must share the same shape.")
+        self.audio_sample_rate = audio_sample_rate
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.n_mels = n_mels
+
+        # Load first sample to get dimensions
+        first_eeg = np.load(self.samples[0].brainwave_path)
+        first_audio = np.load(self.samples[0].audio_path)
+        first_spec = compute_log_mel_spectrogram(
+            first_audio, sample_rate=audio_sample_rate, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels
+        )
+
+        self.eeg_channels = first_eeg.shape[0]
+        self.eeg_length = first_eeg.shape[1]
+        self.audio_mels = first_spec.shape[0]
+        self.audio_frames = first_spec.shape[1]
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Tuple[Tensor, Tensor, Tensor]:
         sample = self.samples[index]
-        eeg = sample.eeg.to(torch.float32)
-        audio = sample.audio.to(torch.float32)
-        label = torch.tensor([sample.label], dtype=torch.float32)
-        return eeg, audio, label
+
+        # Load EEG
+        eeg = np.load(sample.brainwave_path)
+        eeg = torch.from_numpy(eeg).to(torch.float32)
+
+        # Load and process audio
+        audio_waveform = np.load(sample.audio_path)
+        audio_spec = compute_log_mel_spectrogram(
+            audio_waveform,
+            sample_rate=self.audio_sample_rate,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            n_mels=self.n_mels,
+        )
+
+        # Create label
+        label = torch.tensor([1.0 if sample.enjoyed else 0.0], dtype=torch.float32)
+
+        return eeg, audio_spec, label
 
 
 class AudioEncoder(nn.Module):
@@ -271,13 +302,15 @@ class ViewerEnjoymentModel(nn.Module):
 
     def __init__(
         self,
-        eeg_channels: int,
-        eeg_length: int,
-        audio_mels: int,
-        audio_frames: int,
+        eeg_channels: int = 8,
+        eeg_length: int = 3200,
+        audio_mels: int = 64,
+        audio_frames: int = 688,
         hidden_channels: int = 128,
     ) -> None:
         super().__init__()
+        self.eeg_channels = eeg_channels
+        self.eeg_length = eeg_length
         self.audio_mels = audio_mels
         self.audio_frames = audio_frames
         self.eeg_encoder = TemporalFeatureEncoder(
@@ -406,40 +439,40 @@ def train_viewer_model(
 class EnjoymentWindow:
     start_time: float
     end_time: float
-    probability: float
+    enjoyment_score: float  # Changed from 'probability' to match orchestrator
 
 
 def evaluate_enjoyment_windows(
     model: ViewerEnjoymentModel,
-    eeg_stream: Tensor | np.ndarray,
+    brainwave_array: Tensor | np.ndarray,  # Changed parameter name to match orchestrator
     *,
     sample_rate: int = 640,
-    window_seconds: int = 5,
-    stride_seconds: int = 1,
+    window_size: float = 5.0,  # Changed to float (seconds) to match orchestrator
+    stride: float = 1.0,  # Changed to float (seconds) to match orchestrator
     audio_supplier: Optional[Callable[[int, int], Tensor]] = None,
     device: str | torch.device | None = None,
 ) -> List[EnjoymentWindow]:
     """Slide the viewer model across a full EEG recording."""
 
-    if isinstance(eeg_stream, np.ndarray):
-        eeg_stream = torch.from_numpy(eeg_stream)
-    eeg_stream = eeg_stream.to(torch.float32)
-    if eeg_stream.dim() != 2:
-        raise ValueError("eeg_stream must have shape (channels, samples)")
+    if isinstance(brainwave_array, np.ndarray):
+        brainwave_array = torch.from_numpy(brainwave_array)
+    brainwave_array = brainwave_array.to(torch.float32)
+    if brainwave_array.dim() != 2:
+        raise ValueError("brainwave_array must have shape (channels, samples)")
 
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = model.to(device)
     model.eval()
 
-    window_size = window_seconds * sample_rate
-    stride = max(1, stride_seconds * sample_rate)
-    channels, total_samples = eeg_stream.shape
+    window_samples = int(window_size * sample_rate)
+    stride_samples = max(1, int(stride * sample_rate))
+    channels, total_samples = brainwave_array.shape
     results: List[EnjoymentWindow] = []
 
     with torch.no_grad():
-        for start in range(0, total_samples - window_size + 1, stride):
-            end = start + window_size
-            segment = eeg_stream[:, start:end]
+        for start in range(0, total_samples - window_samples + 1, stride_samples):
+            end = start + window_samples
+            segment = brainwave_array[:, start:end]
             segment = _prepare_eeg_batch(segment)
             if segment.dim() == 2:
                 segment = segment.unsqueeze(0)
@@ -459,7 +492,7 @@ def evaluate_enjoyment_windows(
                 EnjoymentWindow(
                     start_time=start / sample_rate,
                     end_time=end / sample_rate,
-                    probability=probability,
+                    enjoyment_score=probability,  # Changed field name
                 )
             )
 
@@ -475,17 +508,45 @@ def evaluate_enjoyment_windows(
 class CreatorAnnotation:
     """Annotation marking an excellent passage in the creator timeline."""
 
+    brainwave_path: Path | str  # Added field
     start_time: float
     end_time: float
+    is_creatable: bool  # Added field
 
 
 class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
     """EEG segments annotated with whether the creator was in a creatable state."""
 
-    def __init__(self, segments: Sequence[Tuple[Tensor, float]]):
-        if not segments:
-            raise ValueError("CreatorStateDataset requires at least one segment.")
-        self.segments = list(segments)
+    def __init__(self, annotations: Sequence[CreatorAnnotation], sample_rate: int = 640):
+        """
+        Create dataset from annotations.
+
+        Args:
+            annotations: List of CreatorAnnotation objects
+            sample_rate: EEG sampling rate (Hz)
+        """
+        if not annotations:
+            raise ValueError("CreatorStateDataset requires at least one annotation.")
+        self.annotations = list(annotations)
+        self.sample_rate = sample_rate
+        self.segments: List[Tuple[Tensor, float]] = []
+
+        # Load and extract segments
+        for ann in self.annotations:
+            eeg_full = np.load(ann.brainwave_path)
+            eeg_tensor = torch.from_numpy(eeg_full).to(torch.float32)
+
+            start_sample = int(ann.start_time * sample_rate)
+            end_sample = int(ann.end_time * sample_rate)
+
+            if end_sample > eeg_tensor.shape[1]:
+                end_sample = eeg_tensor.shape[1]
+            if start_sample >= end_sample:
+                continue
+
+            segment = eeg_tensor[:, start_sample:end_sample]
+            label = 1.0 if ann.is_creatable else 0.0
+            self.segments.append((segment, label))
 
     def __len__(self) -> int:
         return len(self.segments)
@@ -500,8 +561,10 @@ class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
 class CreatorStateModel(nn.Module):
     """Single-modality model that classifies creatable brainwave states."""
 
-    def __init__(self, channels: int, samples: int, hidden_channels: int = 128) -> None:
+    def __init__(self, channels: int = 8, samples: int = 3200, hidden_channels: int = 128) -> None:
         super().__init__()
+        self.channels = channels
+        self.samples = samples
         self.encoder = TemporalFeatureEncoder(
             input_channels=channels,
             hidden_channels=hidden_channels,
@@ -657,21 +720,33 @@ def train_processing_parameter_model(
 
 
 def run_feedback_loop(
-    eeg_source: Iterable[np.ndarray | Tensor],
     *,
     creator_model: CreatorStateModel,
     parameter_model: BrainwaveToProcessingModel,
     parameter_names: Sequence[str],
-    update_callback: Callable[[Dict[str, float]], None],
+    eeg_supplier: Callable[[], np.ndarray | Tensor],  # Changed from eeg_source
+    update_callback: Callable[[Dict[str, float], bool], None],  # Added is_creatable param
     creatable_threshold: float = 0.6,
+    update_interval: float = 5.0,  # Added parameter
     device: str | torch.device | None = None,
 ) -> None:
     """Drive a Processing sketch based on live EEG readings.
 
-    ``eeg_source`` should yield five-second segments with shape ``(channels,
-    samples)``. Whenever the creator model outputs a probability exceeding
-    ``creatable_threshold`` the Processing model is executed and the resulting
-    parameters are passed to ``update_callback``.
+    ``eeg_supplier`` should be a callable that returns five-second EEG segments
+    with shape ``(channels, samples)``. The function is called every
+    ``update_interval`` seconds. Whenever the creator model outputs a probability
+    exceeding ``creatable_threshold`` the Processing model is executed and the
+    resulting parameters are passed to ``update_callback``.
+
+    Args:
+        creator_model: Trained creator state detection model
+        parameter_model: Trained EEG to Processing parameters model
+        parameter_names: List of parameter names
+        eeg_supplier: Callable that returns EEG segment when called
+        update_callback: Callback(parameters_dict, is_creatable) called with updates
+        creatable_threshold: Probability threshold for creatable state
+        update_interval: Seconds between EEG reads
+        device: Torch device for inference
     """
 
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -681,26 +756,43 @@ def run_feedback_loop(
     last_parameters: Optional[Dict[str, float]] = None
 
     with torch.no_grad():
-        for segment in eeg_source:
-            if isinstance(segment, np.ndarray):
-                segment = torch.from_numpy(segment)
-            segment = segment.to(torch.float32)
-            segment = z_score_normalise(segment)
-            segment = segment.unsqueeze(0).to(device)
+        while True:
+            try:
+                # Get EEG segment
+                segment = eeg_supplier()
 
-            logits = creator_model(segment)
-            probability = torch.sigmoid(logits.squeeze(0)).item()
+                if isinstance(segment, np.ndarray):
+                    segment = torch.from_numpy(segment)
+                segment = segment.to(torch.float32)
+                segment = z_score_normalise(segment)
+                segment = segment.unsqueeze(0).to(device)
 
-            if probability >= creatable_threshold:
-                params = parameter_model(segment).squeeze(0)
-                parameter_dict = {
-                    name: float(value)
-                    for name, value in zip(parameter_names, params.tolist())
-                }
-                update_callback(parameter_dict)
-                last_parameters = parameter_dict
-            elif last_parameters is not None:
-                update_callback(last_parameters)
+                # Check creator state
+                logits = creator_model(segment)
+                probability = torch.sigmoid(logits.squeeze(0)).item()
+                is_creatable = probability >= creatable_threshold
+
+                if is_creatable:
+                    # Generate parameters
+                    params = parameter_model(segment).squeeze(0)
+                    parameter_dict = {
+                        name: float(value)
+                        for name, value in zip(parameter_names, params.tolist())
+                    }
+                    update_callback(parameter_dict, is_creatable)
+                    last_parameters = parameter_dict
+                elif last_parameters is not None:
+                    # Maintain last parameters but notify not creatable
+                    update_callback(last_parameters, is_creatable)
+
+                # Wait for next interval
+                time.sleep(update_interval)
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"Error in feedback loop: {e}")
+                time.sleep(update_interval)
 
 
 __all__ = [
@@ -712,11 +804,12 @@ __all__ = [
     "ViewerEnjoymentModel",
     "train_viewer_model",
     "evaluate_enjoyment_windows",
+    "EnjoymentWindow",
     "CreatorAnnotation",
     "CreatorStateDataset",
     "CreatorStateModel",
     "train_creator_model",
     "train_processing_parameter_model",
     "run_feedback_loop",
+    "TrainingHistory",
 ]
-
