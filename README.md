@@ -1,6 +1,6 @@
 # Aesthetic Beacon
 
-**An EEG-driven creative feedback loop.**
+**An EEG-driven creative feedback system.**
 
 Aesthetic Beacon learns which of a creator's brain states go together with
 writing that readers enjoy, and — while the creator works — turns the EEG into a
