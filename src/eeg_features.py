@@ -84,6 +84,10 @@ class FeatureConfig:
     #: Signal before a window that is used to settle the filters.
     context_seconds: float = 2.0
     filter_order: int = 3
+    #: How far a live session may pull the creator's reference profile towards
+    #: its own band levels: 0 keeps the reference fixed (only overall gain is
+    #: corrected), 1 follows the session completely.
+    baseline_adaptation: float = 0.25
     # --- window quality gate -------------------------------------------------
     #: Headset contact-quality values above this count as poor (0 = good, 200 = off the head).
     poor_signal_threshold: int = 50
@@ -399,6 +403,48 @@ def pool_baselines(band_matrices: Iterable[np.ndarray]) -> BandBaseline:
     if not parts:
         raise ValueError("pool_baselines needs at least one band matrix.")
     return _baseline_from_log(np.concatenate(parts, axis=1))
+
+
+def reference_profile(baselines: Sequence[BandBaseline]) -> BandBaseline:
+    """A person's typical band profile, combined from several recordings.
+
+    Recordings differ in overall signal level (electrode contact), so each is
+    first shifted to a common level; what remains is the *shape* of the
+    spectrum, which is characteristic of the person.
+    """
+
+    if not baselines:
+        raise ValueError("reference_profile needs at least one baseline.")
+    means = np.array([b.mean for b in baselines], dtype=np.float64)
+    levels = np.median(means, axis=1, keepdims=True)
+    profile = np.median(means - levels, axis=0) + float(np.median(levels))
+    spread = np.median(np.array([b.std for b in baselines], dtype=np.float64), axis=0)
+    return BandBaseline(tuple(float(v) for v in profile), tuple(float(v) for v in spread))
+
+
+def anchored_baseline(
+    session: BandBaseline,
+    reference: BandBaseline,
+    adaptation: float = 0.25,
+) -> BandBaseline:
+    """Baseline for a session of someone whose reference profile is known.
+
+    A baseline taken from the session alone makes whatever state dominates the
+    session look neutral: an hour of rest and an hour of flow would be
+    indistinguishable.  Anchoring avoids that.  The reference profile is
+    shifted by the session's overall level — the median difference across
+    bands, which a state that moves a few bands barely affects — and each band
+    is then allowed to follow the session by the fraction ``adaptation``.
+    """
+
+    session_mean = np.asarray(session.mean, dtype=np.float64)
+    reference_mean = np.asarray(reference.mean, dtype=np.float64)
+    if session_mean.shape != reference_mean.shape:
+        raise ValueError("Session and reference baselines describe different numbers of bands.")
+    gain = float(np.median(session_mean - reference_mean))
+    deviation = session_mean - reference_mean - gain
+    mean = reference_mean + gain + min(max(adaptation, 0.0), 1.0) * deviation
+    return BandBaseline(tuple(float(v) for v in mean), tuple(reference.std))
 
 
 def normalise_bands(
@@ -898,6 +944,7 @@ __all__ = [
     "SAMPLE_RATE",
     "SEGMENT_SECONDS",
     "WindowQuality",
+    "anchored_baseline",
     "assess_window",
     "band_envelopes",
     "compute_baseline",
@@ -910,6 +957,7 @@ __all__ = [
     "normalise_bands",
     "pool_baselines",
     "recording_from_stream",
+    "reference_profile",
     "resample_signal",
     "robust_sigma",
     "snap_sample_rate",

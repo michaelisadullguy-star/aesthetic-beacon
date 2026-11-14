@@ -37,8 +37,10 @@ from torch import Tensor, nn
 
 from .eeg_features import (
     DEFAULT_FEATURE_CONFIG,
+    BandBaseline,
     BaselineTracker,
     FeatureConfig,
+    anchored_baseline,
     assess_window,
     band_envelopes,
     normalise_bands,
@@ -134,6 +136,21 @@ class FeedbackController:
         self.is_creatable = False
         self.smoothed: Optional[float] = None
         self.last_parameters: Optional[Dict[str, float]] = None
+        reference = getattr(creator_model, "reference", None)
+        self.reference: Optional[BandBaseline] = reference() if callable(reference) else None
+        self.baseline_adaptation = DEFAULT_FEATURE_CONFIG.baseline_adaptation
+
+    def baseline_for(self, session: Optional[BandBaseline]) -> Optional[BandBaseline]:
+        """The baseline to normalise a live window with.
+
+        When the creator model carries the creator's reference profile, the
+        session baseline only corrects it for gain and slow drift; otherwise
+        the session baseline is used as it is.
+        """
+
+        if session is None or self.reference is None:
+            return session
+        return anchored_baseline(session, self.reference, self.baseline_adaptation)
 
     def _probability(self, window: Tensor) -> float:
         with torch.no_grad():
@@ -210,6 +227,9 @@ class PassiveController:
 
     def step(self, eeg_window: np.ndarray | Tensor) -> Decision:
         return Decision(STATE_RECORDING)
+
+    def baseline_for(self, session: Optional[BandBaseline]) -> Optional[BandBaseline]:
+        return session
 
     def hold(self, state: str, reason: str = "") -> Decision:
         return Decision(state, reason=reason)
@@ -388,6 +408,8 @@ class RealtimeSession:
         self.controller = controller
         self.settings = controller.settings
         self.config = feature_config
+        if hasattr(controller, "baseline_adaptation"):
+            controller.baseline_adaptation = feature_config.baseline_adaptation
         self.bridge = bridge
         self.recorder = recorder
         self.on_decision = on_decision
@@ -568,7 +590,8 @@ class RealtimeSession:
         if not self._tracker.ready:
             decision = self.controller.hold(STATE_CALIBRATING, f"{self._tracker.seconds:.0f}s of {self._tracker.min_seconds:.0f}s")
         else:
-            decision = self.controller.step(normalise_bands(bands, self._tracker.baseline()))
+            baseline = self.controller.baseline_for(self._tracker.baseline())
+            decision = self.controller.step(normalise_bands(bands, baseline))
         self._dispatch(stream_time, decision, quality.as_dict())
 
     def _dispatch(self, stream_time: float, decision: Decision, quality: Optional[Dict[str, Any]]) -> None:

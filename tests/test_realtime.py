@@ -94,7 +94,7 @@ def test_bad_input_never_reaches_the_models():
 def test_run_feedback_loop_callback_styles():
     windows = [np.abs(np.random.default_rng(i).normal(5, 1, (8, 3200))).astype(np.float32) for i in range(4)]
     two_argument, one_argument = [], []
-    common = dict(parameter_model=FixedParameters(), probability_smoothing=1.0, device="cpu")
+    common = dict(parameter_model=FixedParameters(), probability_smoothing=1.0, device="cpu", calibration_windows=0)
     records = run_feedback_loop(
         windows, creator_model=ScriptedCreator([0.9, 0.1, 0.1, 0.9]), update_callback=lambda p, c: two_argument.append(c), **common
     )
@@ -110,6 +110,12 @@ def test_run_feedback_loop_callback_styles():
         update_interval=0.05, **common,
     )
     assert len(supplied) == 2 and time.monotonic() - started < 2
+
+    calibrated = run_feedback_loop(
+        windows, creator_model=ScriptedCreator([0.9]), update_callback=lambda p, c: None,
+        parameter_model=FixedParameters(), device="cpu", calibration_windows=3,
+    )
+    assert [r["state"] for r in calibrated] == ["calibrating"] * 3 + ["creatable"]
 
 
 # --- the full session ---------------------------------------------------------------------------

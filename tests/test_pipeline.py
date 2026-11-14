@@ -7,7 +7,6 @@ from scipy.io import wavfile
 
 from src import pipeline as pl
 from src import thinkgear as tg
-from src.eeg_features import load_recording
 from src.model import CheckpointError, load_checkpoint, save_checkpoint
 from src.eeg_features import DEFAULT_FEATURE_CONFIG
 from src.simulator import Segment, simulate_stream, write_hex_recording
@@ -50,7 +49,7 @@ def test_step1_conversion_report(tmp_path):
 
 @pytest.fixture()
 def listening(tmp_path):
-    eeg = write_hex_recording(
+    write_hex_recording(
         tmp_path / "eeg" / "s1.txt",
         [Segment(15.0), Segment(6.0, "enjoy"), Segment(15.0), Segment(6.0, "enjoy"), Segment(18.0)],
         seed=3,

@@ -81,7 +81,6 @@ def test_rerun_skips_finished_steps_and_retrains_on_new_data(demo, caplog):
 
 
 def test_individual_steps_and_documented_commands(demo, tmp_path, repo_root):
-    base = ["--config", str(demo["config"])]
     # Without the demo's data_root override the configured paths point at an empty tree.
     empty = tmp_path / "empty.json"
     empty.write_text(json.dumps({"data_root": str(tmp_path / "nothing"), "device": "cpu"}))
@@ -184,3 +183,57 @@ def test_recorded_session_is_labelled_automatically(demo):
         shutil.rmtree(data / "step6_realtime" / "sessions" / "20250102-120000", ignore_errors=True)
         for leftover in (data / "step4_creator_training" / "annotations" / "derived").glob("2025010*.json"):
             leftover.unlink()
+
+
+def _replay(demo, tmp_path, segments, *, level=1.0, seed=77):
+    """Run the trained live loop on a freshly simulated session of the demo's creator."""
+
+    from src.simulator import Person, write_hex_recording
+
+    creator = json.loads((demo["data"] / "demo_truth.json").read_text())["creator"]
+    person = Person(tuple(creator["band_factors"]), creator["level"] * level, creator["blink_interval"])
+    path = write_hex_recording(tmp_path / "scenario.txt", segments, seed=seed, person=person)
+    orchestrator = WorkflowOrchestrator(WorkflowConfig(demo["config"], {"data_root": str(demo["data"])}))
+    decisions = []
+    orchestrator.run_step6_realtime(
+        f"replay:{path}", speed=0, use_osc=False, record=False,
+        on_decision=lambda when, decision: decisions.append((when, decision.state)),
+    )
+    return [(when, state) for when, state in decisions if state != "calibrating"]
+
+
+def _share_creatable(decisions, start, end):
+    inside = [state == "creatable" for when, state in decisions if start + 10 <= when <= end]
+    return sum(inside) / max(len(inside), 1)
+
+
+def test_a_session_of_pure_rest_stays_dark(demo, tmp_path):
+    """The dominant state of a session must not be mistaken for 'neutral'."""
+
+    from src.simulator import Segment
+
+    decisions = _replay(demo, tmp_path, [Segment(300.0, "rest")])
+    assert _share_creatable(decisions, 0, 300) < 0.15
+
+
+def test_a_long_creatable_stretch_stays_lit(demo, tmp_path):
+    """The adaptive baseline must not absorb a sustained state."""
+
+    from src.simulator import Segment
+
+    decisions = _replay(demo, tmp_path, [Segment(40.0, "rest"), Segment(360.0, "creatable"), Segment(60.0, "rest")])
+    assert _share_creatable(decisions, 40, 400) > 0.85
+    assert _share_creatable(decisions, 220, 400) > 0.85  # still on after five minutes
+    assert _share_creatable(decisions, 400, 460) < 0.25
+
+
+def test_starting_in_the_creatable_state_and_a_change_of_contact(demo, tmp_path):
+    from src.simulator import Segment
+
+    decisions = _replay(demo, tmp_path, [Segment(150.0, "creatable"), Segment(150.0, "rest")])
+    assert _share_creatable(decisions, 0, 150) > 0.8 and _share_creatable(decisions, 150, 300) < 0.2
+    # Twice the signal level (a better electrode contact) changes nothing.
+    decisions = _replay(demo, tmp_path, [Segment(60.0, "rest"), Segment(120.0, "creatable"), Segment(100.0, "rest")], level=2.0)
+    assert _share_creatable(decisions, 0, 60) < 0.2
+    assert _share_creatable(decisions, 60, 180) > 0.8
+    assert _share_creatable(decisions, 180, 280) < 0.2

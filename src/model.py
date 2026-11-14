@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import torch
 from torch import Tensor, nn
 
-from .eeg_features import FeatureConfig
+from .eeg_features import BandBaseline, FeatureConfig
 from .parameters import PARAMETER_NAMES, ParameterCodec
 
 CHECKPOINT_VERSION = 2
@@ -244,6 +244,30 @@ class CreatorStateModel(_CalibratedClassifier):
             nn.Linear(hidden_channels, 1),
         )
         self._init_calibration()
+        # The creator's typical band profile, against which live EEG is measured.
+        self.register_buffer("reference_mean", torch.zeros(channels))
+        self.register_buffer("reference_std", torch.ones(channels))
+        self.register_buffer("has_reference", torch.zeros((), dtype=torch.bool))
+
+    def set_reference(self, baseline: Optional[BandBaseline]) -> None:
+        """Store the reference profile the training windows were normalised with."""
+
+        if baseline is None:
+            self.has_reference.fill_(False)
+            return
+        self.reference_mean.copy_(torch.tensor(baseline.mean, dtype=torch.float32))
+        self.reference_std.copy_(torch.tensor(baseline.std, dtype=torch.float32))
+        self.has_reference.fill_(True)
+
+    def reference(self) -> Optional[BandBaseline]:
+        """The stored reference profile, or ``None`` if the model has none."""
+
+        if not bool(self.has_reference):
+            return None
+        return BandBaseline(
+            tuple(float(v) for v in self.reference_mean.tolist()),
+            tuple(float(v) for v in self.reference_std.tolist()),
+        )
 
     def config(self) -> Dict[str, Any]:
         return {

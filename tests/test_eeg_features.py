@@ -152,3 +152,28 @@ def test_load_recording_variants(tmp_path):
     np.save(tmp_path / "wrong.npy", np.zeros((5, 100), dtype=np.float32))
     with pytest.raises(ef.RecordingError):
         ef.load_recording(tmp_path / "wrong.npy")
+
+
+def test_anchored_baseline_corrects_gain_but_not_state():
+    reference = ef.BandBaseline(tuple(np.linspace(3.0, 1.0, 8)), (0.3,) * 8)
+    louder = ef.BandBaseline(tuple(np.linspace(3.0, 1.0, 8) + 0.7), (0.5,) * 8)
+    anchored = ef.anchored_baseline(louder, reference, 0.25)
+    assert np.allclose(anchored.mean, louder.mean) and anchored.std == reference.std
+
+    # A session spent in a state that lifts two bands: the baseline must not follow it.
+    shifted = np.linspace(3.0, 1.0, 8)
+    shifted[[1, 3]] += 0.6
+    in_state = ef.BandBaseline(tuple(shifted), (0.3,) * 8)
+    fixed = ef.anchored_baseline(in_state, reference, 0.0)
+    assert np.allclose(fixed.mean, reference.mean)
+    partly = ef.anchored_baseline(in_state, reference, 0.25)
+    assert partly.mean[1] - reference.mean[1] == pytest.approx(0.15)
+    assert ef.anchored_baseline(in_state, reference, 1.0).mean == pytest.approx(in_state.mean)
+
+
+def test_reference_profile_ignores_recording_level():
+    shape = np.linspace(3.0, 1.0, 8)
+    baselines = [ef.BandBaseline(tuple(shape + level), (0.2 + 0.1 * i,) * 8) for i, level in enumerate((0.0, 0.5, -0.4))]
+    profile = ef.reference_profile(baselines)
+    assert np.allclose(np.array(profile.mean) - np.median(profile.mean), shape - np.median(shape))
+    assert profile.std == pytest.approx((0.3,) * 8)

@@ -57,10 +57,12 @@ from .eeg_features import (
     FeatureConfig,
     Recording,
     RecordingError,
+    anchored_baseline,
     decode_interleaved_int16,
     load_recording,
     normalise_bands,
     recording_from_stream,
+    reference_profile,
 )
 from .model import (
     BrainwaveToProcessingModel,
@@ -1174,6 +1176,7 @@ class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
         baseline_seconds: float = 180.0,
         calibration_seconds: float = 20.0,
         split_block_seconds: float = 15.0,
+        reference: Optional[BandBaseline] = None,
     ) -> None:
         if not annotations:
             raise ValueError("CreatorStateDataset requires at least one annotation.")
@@ -1185,6 +1188,16 @@ class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
         self.segments: List[Tuple[Tensor, float]] = []
         self.groups: List[str] = []
         self.skipped = 0
+
+        # The creator's typical band profile: every window, here and live, is
+        # expressed relative to it (see eeg_features.anchored_baseline).
+        if reference is None:
+            try:
+                distinct = sorted({str(Path(a.brainwave_path)) for a in self.annotations})
+                reference = reference_profile([load_recording(Path(p), feature_config).baseline() for p in distinct])
+            except RecordingError as error:
+                raise PipelineError(str(error)) from error
+        self.reference = reference
 
         window = feature_config.segment_seconds
         length = feature_config.segment_samples
@@ -1207,8 +1220,12 @@ class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
                     self.skipped += 1
                     continue
                 # Normalise exactly as the live loop will: against the preceding minutes.
-                baseline = recording.running_baseline(
-                    start + length, history_seconds=baseline_seconds, min_seconds=calibration_seconds
+                baseline = anchored_baseline(
+                    recording.running_baseline(
+                        start + length, history_seconds=baseline_seconds, min_seconds=calibration_seconds
+                    ),
+                    reference,
+                    feature_config.baseline_adaptation,
                 )
                 eeg = torch.from_numpy(recording.normalised_window(start, baseline))
                 self.segments.append((eeg, 1.0 if annotation.is_creatable else 0.0))
@@ -1238,6 +1255,7 @@ class CreatorStateDataset(Dataset[Tuple[Tensor, Tensor]]):
         dataset.segments = [(torch.as_tensor(eeg, dtype=torch.float32), float(label)) for eeg, label in segments]
         dataset.groups = [str(index) for index in range(len(segments))]
         dataset.skipped = 0
+        dataset.reference = None
         dataset._refresh()
         return dataset
 
@@ -1324,6 +1342,7 @@ def train_creator_model(
     )
     if val_tensors is not None:
         model.set_temperature(fit_temperature(logits, targets))
+    model.set_reference(getattr(dataset, "reference", None))
     history.metrics = classification_metrics(logits, targets, float(model.temperature))
     history.metrics["temperature"] = float(model.temperature)
     history.metrics["evaluated_on"] = "validation" if val_tensors is not None else "training"  # type: ignore[assignment]
@@ -1467,6 +1486,7 @@ def run_feedback_loop(
     max_updates: Optional[int] = None,
     probability_smoothing: float = 0.6,
     parameter_smoothing: float = 0.6,
+    calibration_windows: int = 4,
 ) -> List[Dict[str, Any]]:
     """Drive the display from a stream of five-second band matrices.
 
@@ -1475,7 +1495,9 @@ def run_feedback_loop(
     function called once per ``update_interval`` seconds that returns the
     latest matrix (or ``None`` to stop).
 
-    For every window the creator model is evaluated.  While the creator is in
+    The first ``calibration_windows`` windows only establish the session's
+    baseline (20 seconds by default, as in a live session); after that, for
+    every window the creator model is evaluated.  While the creator is in
     a creatable state, new parameters are computed from the same window and
     passed to ``update_callback(parameters, is_creatable)``.  When the state is
     left, the callback receives the *last* parameter set with
@@ -1541,7 +1563,10 @@ def run_feedback_loop(
             else:
                 if array.size and float(array.min()) >= 0.0:
                     tracker.update(array)
-                decision = controller.step(normalise_bands(array, tracker.baseline()))
+                if len(records) < calibration_windows:
+                    decision = controller.hold("calibrating")
+                else:
+                    decision = controller.step(normalise_bands(array, controller.baseline_for(tracker.baseline())))
 
             if decision.parameters is not None:
                 if arity >= 2:
