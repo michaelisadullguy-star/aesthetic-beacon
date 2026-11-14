@@ -1,53 +1,64 @@
 {
-  "description": "Example configuration for Aesthetic Beacon workflow",
+  "description": "Example configuration for the Aesthetic Beacon workflow. Every value shown is the default; a configuration file only needs the settings it changes. Relative paths are resolved against the folder this file is in, and the step folders below follow data_root.",
 
   "data_root": "data",
-  "model_dir": "data/step6_realtime/models",
-  "output_dir": "data/step6_realtime/outputs",
+  "device": "auto",
+  "seed": 0,
+
+  "features": {
+    "sample_rate": 640,
+    "device_sample_rate": "auto",
+    "notch_hz": 50.0
+  },
+
+  "model": {
+    "hidden_channels": 128,
+    "input_stride": 8
+  },
 
   "step1": {
     "hex_dir": "data/step1_hex_eeg",
-    "output_dir": "data/step1_hex_eeg/converted",
-    "sample_rate": 640,
-    "num_channels": 8
+    "output_dir": "data/step1_hex_eeg/converted"
   },
 
   "step2": {
-    "eeg_dir": "data/step2_viewer_training/eeg",
-    "audio_dir": "data/step2_viewer_training/audio",
     "annotations": "data/step2_viewer_training/annotations/annotations.json",
     "model_path": "data/step6_realtime/models/viewer_model.pt",
-    "epochs": 50,
+    "epochs": 30,
     "batch_size": 16,
-    "learning_rate": 0.0001,
+    "learning_rate": 0.001,
     "validation_split": 0.2
   },
 
   "step3": {
     "eeg_dir": "data/step3_article_reading/eeg",
+    "article": "data/step3_article_reading/article.txt",
+    "sessions": "data/step3_article_reading/sessions.json",
     "results_dir": "data/step3_article_reading/results",
     "viewer_model": "data/step6_realtime/models/viewer_model.pt",
     "window_size": 5.0,
-    "stride": 1.0
+    "stride": 1.0,
+    "excellent_fraction": 0.3
   },
 
   "step4": {
     "eeg_dir": "data/step4_creator_training/eeg",
-    "annotations": "data/step4_creator_training/annotations/annotations.json",
+    "annotations_dir": "data/step4_creator_training/annotations",
     "model_path": "data/step6_realtime/models/creator_model.pt",
-    "epochs": 50,
-    "batch_size": 16,
-    "learning_rate": 0.0001,
+    "epochs": 40,
+    "batch_size": 8,
+    "learning_rate": 0.0005,
     "validation_split": 0.2
   },
 
   "step5": {
     "dataset_root": "data/step5_image_training",
     "model_path": "data/step6_realtime/models/parameter_model.pt",
-    "epochs": 100,
-    "batch_size": 8,
-    "learning_rate": 0.001,
-    "hidden_channels": 128,
+    "processing_weights": null,
+    "epochs": 120,
+    "batch_size": 32,
+    "learning_rate": 0.0005,
+    "validation_split": 0.2,
     "num_blocks": 4,
     "dropout": 0.1
   },
@@ -55,12 +66,18 @@
   "step6": {
     "creator_model": "data/step6_realtime/models/creator_model.pt",
     "parameter_model": "data/step6_realtime/models/parameter_model.pt",
+    "sessions_dir": "data/step6_realtime/sessions",
+    "source": null,
     "creatable_threshold": 0.6,
+    "release_threshold": null,
     "update_interval": 5.0,
+    "calibration_seconds": 20.0,
+    "probability_smoothing": 0.6,
+    "parameter_smoothing": 0.6,
+    "record": true,
+    "watch_document": null,
     "use_osc": true,
     "osc_host": "127.0.0.1",
     "osc_port": 12000
-  },
-
-  "device": "cuda"
+  }
 }

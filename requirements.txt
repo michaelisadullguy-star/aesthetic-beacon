@@ -1,16 +1,9 @@
 # Core dependencies for aesthetic-beacon
-# Deep learning framework
-torch>=2.0.0
-
-# Numerical computing
+torch>=2.0.0        # models and training
 numpy>=1.24.0
+scipy>=1.10.0       # band filters, resampling, WAV files
+Pillow>=10.0.0      # artwork images
 
-# Image processing
-Pillow>=10.0.0
-
-# Progress bars
-tqdm>=4.65.0
-
-# Optional: OSC (Open Sound Control) support for real-time communication
-# Install with: pip install aesthetic-beacon[osc]
-# python-osc>=1.8.0
+# Reading the headset live from a serial port (USB dongle / Bluetooth).
+# Not needed for training or for replaying recordings.
+pyserial>=3.5

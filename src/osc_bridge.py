@@ -1,262 +1,269 @@
-"""
-OSC Bridge for Real-Time Parameter Communication
+"""Sending parameters from Python to the Processing sketch.
 
-Sends Processing parameters from Python to Processing sketch via OSC (Open Sound Control).
-Requires python-osc library: pip install python-osc
+Two transports are used side by side:
+
+* **OSC over UDP** — immediate.  A complete parameter set travels in a single
+  message, so the sketch never shows a half-applied update::
+
+      /aesthetic_beacon/params  <sequence:int> <name:str> <value> <name:str> <value> ...
+      /aesthetic_beacon/state   <creatable:int> <confidence:float> <label:str>
+
+* **A JSON file** — written atomically on every update, in the layout the
+  sketch loads.  The sketch watches this file, so the display keeps working if
+  UDP is blocked, and the file doubles as a record of what is being shown.
+
+OSC encoding is implemented here directly; no extra package is required.
 """
+from __future__ import annotations
 
 import json
+import logging
+import os
+import socket
+import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-try:
-    from pythonosc import udp_client
-    from pythonosc.osc_message_builder import OscMessageBuilder
-    OSC_AVAILABLE = True
-except ImportError:
-    OSC_AVAILABLE = False
-    print("Warning: python-osc not installed. Run: pip install python-osc")
+from .parameters import to_sketch_json, typed_items
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_JSON_PATH = Path("data/step6_realtime/outputs/current_parameters.json")
 
 
 @dataclass
 class OSCConfig:
     """Configuration for OSC communication."""
+
     host: str = "127.0.0.1"
     port: int = 12000
     address_prefix: str = "/aesthetic_beacon"
-    batch_send: bool = True  # Send all params in one bundle
-    fallback_to_json: bool = True  # Also save to JSON file
+    #: Kept for compatibility: a parameter set is always sent as one message.
+    batch_send: bool = True
+    #: Also write every parameter set to the JSON file.
+    fallback_to_json: bool = True
 
 
-class ProcessingOSCBridge:
-    """
-    Bridge for sending Processing parameters to a Processing sketch via OSC.
+# ---------------------------------------------------------------------------
+# Minimal OSC 1.0 encoding / decoding
+# ---------------------------------------------------------------------------
 
-    Usage:
-        bridge = ProcessingOSCBridge()
-        bridge.send_parameters({"canvasWidth": 800, "noiseScale": 0.015, ...})
-    """
 
-    def __init__(self, config: Optional[OSCConfig] = None, json_path: Optional[Path] = None):
-        """
-        Initialize the OSC bridge.
+def _pad(data: bytes) -> bytes:
+    return data + b"\x00" * (4 - len(data) % 4)
 
-        Args:
-            config: OSC configuration (uses defaults if None)
-            json_path: Fallback JSON file path for parameter output
-        """
-        self.config = config or OSCConfig()
-        self.json_path = json_path or Path("data/step6_realtime/outputs/current_parameters.json")
 
-        if OSC_AVAILABLE:
-            self.client = udp_client.SimpleUDPClient(self.config.host, self.config.port)
-            print(f"OSC client initialized: {self.config.host}:{self.config.port}")
+def encode_osc_message(address: str, arguments: Sequence[Any] = ()) -> bytes:
+    """Encode an OSC message with int32, float32 and string arguments."""
+
+    tags = ","
+    body = b""
+    for argument in arguments:
+        if isinstance(argument, bool):
+            tags += "i"
+            body += struct.pack(">i", int(argument))
+        elif isinstance(argument, int):
+            tags += "i"
+            body += struct.pack(">i", max(-(2**31), min(2**31 - 1, argument)))
+        elif isinstance(argument, float):
+            tags += "f"
+            body += struct.pack(">f", argument)
+        elif isinstance(argument, str):
+            tags += "s"
+            body += _pad(argument.encode("utf8"))
         else:
-            self.client = None
-            print("OSC not available, will use JSON file fallback only")
+            raise TypeError(f"Unsupported OSC argument type: {type(argument).__name__}")
+    return _pad(address.encode("ascii")) + _pad(tags.encode("ascii")) + body
 
-        # Ensure JSON output directory exists
-        self.json_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def send_parameters(self, parameters: Dict[str, Any], timestamp: Optional[float] = None) -> bool:
-        """
-        Send Processing parameters via OSC and/or JSON file.
+def decode_osc_message(packet: bytes) -> Tuple[str, List[Any]]:
+    """Decode a message produced by :func:`encode_osc_message`."""
 
-        Args:
-            parameters: Dictionary of parameter name -> value
-            timestamp: Optional timestamp for this update
+    def read_string(offset: int) -> Tuple[str, int]:
+        end = packet.index(b"\x00", offset)
+        text = packet[offset:end].decode("utf8")
+        return text, offset + (len(packet[offset:end]) // 4 + 1) * 4
 
-        Returns:
-            True if successfully sent, False otherwise
-        """
-        if timestamp is None:
-            timestamp = time.time()
-
-        success = True
-
-        # Send via OSC if available
-        if self.client is not None:
-            try:
-                if self.config.batch_send:
-                    # Send all parameters in a bundle
-                    self._send_bundle(parameters, timestamp)
-                else:
-                    # Send each parameter individually
-                    for param_name, value in parameters.items():
-                        self._send_parameter(param_name, value)
-
-                print(f"✓ Sent {len(parameters)} parameters via OSC")
-            except Exception as e:
-                print(f"✗ OSC send failed: {e}")
-                success = False
-
-        # Fallback to JSON file
-        if self.config.fallback_to_json or not OSC_AVAILABLE:
-            try:
-                self._write_json(parameters, timestamp)
-                print(f"✓ Wrote parameters to {self.json_path}")
-            except Exception as e:
-                print(f"✗ JSON write failed: {e}")
-                success = False
-
-        return success
-
-    def _send_parameter(self, name: str, value: Any):
-        """Send a single parameter via OSC."""
-        address = f"{self.config.address_prefix}/{name}"
-
-        # Handle different value types
-        if isinstance(value, (int, float, bool)):
-            self.client.send_message(address, value)
-        elif isinstance(value, str):
-            self.client.send_message(address, value)
-        elif isinstance(value, (list, tuple)):
-            self.client.send_message(address, list(value))
+    address, offset = read_string(0)
+    tags, offset = read_string(offset)
+    arguments: List[Any] = []
+    for tag in tags[1:]:
+        if tag == "i":
+            arguments.append(struct.unpack_from(">i", packet, offset)[0])
+            offset += 4
+        elif tag == "f":
+            arguments.append(struct.unpack_from(">f", packet, offset)[0])
+            offset += 4
+        elif tag == "s":
+            text, offset = read_string(offset)
+            arguments.append(text)
         else:
-            # Fallback to string representation
-            self.client.send_message(address, str(value))
+            raise ValueError(f"Unsupported OSC type tag '{tag}'.")
+    return address, arguments
 
-    def _send_bundle(self, parameters: Dict[str, Any], timestamp: float):
-        """Send all parameters in a single OSC bundle."""
-        from pythonosc import osc_bundle_builder
 
-        builder = osc_bundle_builder.OscBundleBuilder(timestamp)
+def _write_json_atomically(path: Path, document: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf8") as handle:
+        json.dump(document, handle, indent=2)
+    os.replace(temporary, path)
 
-        for name, value in parameters.items():
-            address = f"{self.config.address_prefix}/{name}"
-            msg_builder = OscMessageBuilder(address=address)
 
-            # Add value with appropriate type
-            if isinstance(value, bool):
-                msg_builder.add_arg(int(value))  # OSC doesn't have bool, use int
-            elif isinstance(value, (int, float)):
-                msg_builder.add_arg(value)
-            elif isinstance(value, str):
-                msg_builder.add_arg(value)
-            elif isinstance(value, (list, tuple)):
-                for v in value:
-                    msg_builder.add_arg(v)
-            else:
-                msg_builder.add_arg(str(value))
-
-            builder.add_content(msg_builder.build())
-
-        bundle = builder.build()
-        self.client.send(bundle)
-
-    def _write_json(self, parameters: Dict[str, Any], timestamp: float):
-        """Write parameters to JSON file as fallback."""
-        output = {
-            "timestamp": timestamp,
-            "parameters": parameters
-        }
-
-        with open(self.json_path, 'w') as f:
-            json.dump(output, f, indent=2)
-
-        # Also save a timestamped copy
-        history_dir = self.json_path.parent / "parameter_history"
-        history_dir.mkdir(exist_ok=True)
-
-        history_file = history_dir / f"params_{int(timestamp)}.json"
-        with open(history_file, 'w') as f:
-            json.dump(output, f, indent=2)
-
-    def send_state_change(self, is_creatable: bool, confidence: float = 1.0):
-        """
-        Send creator state change notification.
-
-        Args:
-            is_creatable: Whether the creator is in a creatable state
-            confidence: Model confidence (0-1)
-        """
-        if self.client is not None:
-            self.client.send_message(
-                f"{self.config.address_prefix}/state",
-                [int(is_creatable), confidence]
-            )
-            print(f"State: {'CREATABLE' if is_creatable else 'NOT CREATABLE'} (confidence: {confidence:.2f})")
-
-    def close(self):
-        """Clean up resources."""
-        if self.client is not None:
-            # UDP client doesn't need explicit closing
-            pass
+# ---------------------------------------------------------------------------
+# Bridges
+# ---------------------------------------------------------------------------
 
 
 class JSONOnlyBridge:
-    """
-    Simplified bridge that only writes parameters to JSON files.
-    Use this if OSC is not needed or unavailable.
-    """
+    """Writes parameter sets to the JSON file the sketch watches."""
 
-    def __init__(self, json_path: Optional[Path] = None):
-        """Initialize JSON-only bridge."""
-        self.json_path = json_path or Path("data/step6_realtime/outputs/current_parameters.json")
+    def __init__(self, json_path: Optional[Path | str] = None, **_ignored: Any) -> None:
+        self.json_path = Path(json_path) if json_path else DEFAULT_JSON_PATH
         self.json_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sequence = 0
+        self._state: Dict[str, Any] = {"creatable": False, "confidence": 0.0, "label": "waiting"}
+        self._parameters: Optional[Dict[str, float]] = None
+        self._json_failed = False
 
-    def send_parameters(self, parameters: Dict[str, Any], timestamp: Optional[float] = None) -> bool:
-        """Write parameters to JSON file."""
-        if timestamp is None:
-            timestamp = time.time()
+    # -- public API -------------------------------------------------------------
+    def send_parameters(self, parameters: Mapping[str, Any], timestamp: Optional[float] = None) -> bool:
+        """Publish a parameter set. Returns ``True`` if at least one transport succeeded."""
 
-        output = {
-            "timestamp": timestamp,
-            "parameters": parameters
+        self.sequence += 1
+        self._parameters = {name: value for name, value in typed_items(parameters)}
+        return self._publish(timestamp)
+
+    def send_state_change(
+        self,
+        is_creatable: bool,
+        confidence: float = 1.0,
+        label: Optional[str] = None,
+    ) -> bool:
+        """Publish the creator state (shown in the sketch's status overlay)."""
+
+        self._state = {
+            "creatable": bool(is_creatable),
+            "confidence": round(float(confidence), 4),
+            "label": label or ("creatable" if is_creatable else "idle"),
         }
+        return True
 
+    def close(self) -> None:
+        """Release resources."""
+
+    # -- internals --------------------------------------------------------------
+    def _publish(self, timestamp: Optional[float]) -> bool:
+        return self._write_json(timestamp)
+
+    def _write_json(self, timestamp: Optional[float]) -> bool:
+        if self._parameters is None:
+            return False
+        document: Dict[str, Any] = to_sketch_json(self._parameters)
+        document["sequence"] = self.sequence
+        document["timestamp"] = time.time() if timestamp is None else timestamp
+        document["state"] = dict(self._state)
         try:
-            with open(self.json_path, 'w') as f:
-                json.dump(output, f, indent=2)
-
-            print(f"✓ Wrote {len(parameters)} parameters to {self.json_path}")
+            _write_json_atomically(self.json_path, document)
+            self._json_failed = False
             return True
-        except Exception as e:
-            print(f"✗ JSON write failed: {e}")
+        except OSError as error:
+            if not self._json_failed:
+                logger.error("Could not write %s: %s", self.json_path, error)
+            self._json_failed = True
             return False
 
-    def send_state_change(self, is_creatable: bool, confidence: float = 1.0):
-        """Log state change (JSON-only mode)."""
-        print(f"State: {'CREATABLE' if is_creatable else 'NOT CREATABLE'} (confidence: {confidence:.2f})")
 
+class ProcessingOSCBridge(JSONOnlyBridge):
+    """Sends parameters to the Processing sketch via OSC and mirrors them to JSON.
 
-def create_bridge(use_osc: bool = True, **kwargs) -> Any:
+    Usage::
+
+        bridge = ProcessingOSCBridge()
+        bridge.send_parameters({"noiseScale": 0.015, "cellSize": 32, ...})
     """
-    Factory function to create appropriate bridge.
+
+    def __init__(self, config: Optional[OSCConfig] = None, json_path: Optional[Path | str] = None) -> None:
+        super().__init__(json_path)
+        self.config = config or OSCConfig()
+        self._socket: Optional[socket.socket] = None
+        self._osc_failed = False
+        try:
+            self._address = (socket.gethostbyname(self.config.host), int(self.config.port))
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            logger.info("Sending OSC to %s:%d", self.config.host, self.config.port)
+        except OSError as error:
+            logger.error(
+                "OSC is unavailable (%s:%s — %s); parameters are written to %s only.",
+                self.config.host,
+                self.config.port,
+                error,
+                self.json_path,
+            )
+
+    def send_state_change(
+        self,
+        is_creatable: bool,
+        confidence: float = 1.0,
+        label: Optional[str] = None,
+    ) -> bool:
+        super().send_state_change(is_creatable, confidence, label)
+        return self._send(
+            f"{self.config.address_prefix}/state",
+            [int(bool(is_creatable)), float(confidence), str(self._state["label"])],
+        )
+
+    def _publish(self, timestamp: Optional[float]) -> bool:
+        assert self._parameters is not None
+        arguments: List[Any] = [self.sequence]
+        for name, value in self._parameters.items():
+            arguments.append(name)
+            arguments.append(value)
+        sent = self._send(f"{self.config.address_prefix}/params", arguments)
+        written = self._write_json(timestamp) if self.config.fallback_to_json else False
+        return sent or written
+
+    def _send(self, address: str, arguments: Sequence[Any]) -> bool:
+        if self._socket is None:
+            return False
+        try:
+            self._socket.sendto(encode_osc_message(address, arguments), self._address)
+            self._osc_failed = False
+            return True
+        except OSError as error:
+            if not self._osc_failed:
+                logger.error("OSC send failed: %s (will keep trying)", error)
+            self._osc_failed = True
+            return False
+
+    def close(self) -> None:
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+
+
+def create_bridge(use_osc: bool = True, **kwargs: Any) -> JSONOnlyBridge:
+    """Create the bridge to the display.
 
     Args:
-        use_osc: If True and python-osc available, use OSC bridge. Otherwise use JSON-only.
-        **kwargs: Additional arguments for bridge configuration
-
-    Returns:
-        ProcessingOSCBridge or JSONOnlyBridge instance
+        use_osc: Send OSC in addition to writing the JSON file.
+        **kwargs: ``config`` (:class:`OSCConfig`) and ``json_path``.
     """
-    if use_osc and OSC_AVAILABLE:
+
+    if use_osc:
         return ProcessingOSCBridge(**kwargs)
-    else:
-        return JSONOnlyBridge(**kwargs)
+    kwargs.pop("config", None)
+    return JSONOnlyBridge(**kwargs)
 
 
-# Example usage
-if __name__ == "__main__":
-    # Example 1: OSC Bridge
-    print("=== OSC Bridge Example ===")
-    bridge = create_bridge(use_osc=True)
-
-    example_params = {
-        "canvasWidth": 800,
-        "canvasHeight": 800,
-        "noiseScale": 0.015,
-        "colorCycleSpeed": 0.002,
-        "cellSize": 40,
-        "targetFrameRate": 30
-    }
-
-    bridge.send_parameters(example_params)
-    bridge.send_state_change(is_creatable=True, confidence=0.87)
-
-    print("\n=== JSON-Only Bridge Example ===")
-    json_bridge = JSONOnlyBridge()
-    json_bridge.send_parameters(example_params)
+__all__ = [
+    "DEFAULT_JSON_PATH",
+    "JSONOnlyBridge",
+    "OSCConfig",
+    "ProcessingOSCBridge",
+    "create_bridge",
+    "decode_osc_message",
+    "encode_osc_message",
+]

@@ -1,129 +1,205 @@
-# Data Directory Structure
+# Data layout
 
-This directory contains all data for the 6-step aesthetic feedback workflow.
+Everything the workflow reads and writes lives under this folder (or under
+`data_root` in your configuration). The contents are not tracked by git.
 
-## Directory Organization
-
-### `step1_hex_eeg/`
-Raw hexadecimal EEG dumps before processing.
-- **Format**: Plain text hex files (e.g., `session_001.hex`)
-- **Content**: Hexadecimal representation of EEG data (8 channels × 640 Hz)
-- **Usage**: Input for `decode_hex_eeg_segment()` in pipeline Step 1
-
-### `step2_viewer_training/`
-Training data for the "to viewer" model (aesthetic enjoyment prediction).
-
-- **`eeg/`**: 5-second EEG segments during music listening (`.npy` files, shape 8×3200)
-- **`audio/`**: Corresponding 5-second audio clips (`.wav` files, 44.1 kHz recommended)
-- **`annotations/`**: JSON files mapping samples to enjoyment labels
-  ```json
-  {
-    "samples": [
-      {"eeg_file": "eeg/sample_001.npy", "audio_file": "audio/sample_001.wav", "enjoyed": true},
-      {"eeg_file": "eeg/sample_002.npy", "audio_file": "audio/sample_002.wav", "enjoyed": false}
-    ]
-  }
-  ```
-
-### `step3_article_reading/`
-Data from participants reading articles.
-
-- **`eeg/`**: Full EEG recordings during article reading (`.npy` files, shape 8×N)
-- **`results/`**: Output JSON files with enjoyment scores per time window
-  ```json
-  {
-    "session_id": "participant_001_article_reading",
-    "windows": [
-      {"start_time": 0.0, "end_time": 5.0, "enjoyment_score": 0.87},
-      {"start_time": 1.0, "end_time": 6.0, "enjoyment_score": 0.92}
-    ]
-  }
-  ```
-
-### `step4_creator_training/`
-Training data for the "to creator" model (creatable state detection).
-
-- **`eeg/`**: Creator's EEG during writing/creating (`.npy` files, shape 8×N)
-- **`annotations/`**: JSON files marking "excellent" passages
-  ```json
-  {
-    "session_id": "creator_session_001",
-    "keystroke_log": "creator_session_001_keystrokes.json",
-    "excellent_passages": [
-      {
-        "start_time": 120.5,
-        "end_time": 125.5,
-        "content": "The sunset painted the sky in hues of amber and rose...",
-        "label": "creatable"
-      },
-      {
-        "start_time": 300.0,
-        "end_time": 305.0,
-        "content": "A mundane passage...",
-        "label": "not_creatable"
-      }
-    ]
-  }
-  ```
-
-### `step5_image_training/`
-Training data for EEG → Processing parameters mapping.
-
-- **`brainwaves/`**: EEG responses to viewing images (`.npy` files, shape 8×3200)
-- **`artworks/`**: Corresponding images that participants viewed (`.png`, `.jpg`)
-- **`metadata.json`**: Processing parameters for each artwork
-  ```json
-  {
-    "artwork_001.png": {
-      "canvasWidth": 800,
-      "canvasHeight": 800,
-      "noiseScale": 0.015,
-      "colorCycleSpeed": 0.002,
-      ...
-    }
-  }
-  ```
-
-**Note**: Filenames must match: `brainwaves/sample_001.npy` ↔ `artworks/sample_001.png`
-
-### `step6_realtime/`
-Real-time feedback loop resources.
-
-- **`models/`**: Trained PyTorch model checkpoints
-  - `creator_model.pt` (Step 4 output)
-  - `parameter_model.pt` (Step 5 output)
-  - `viewer_model.pt` (Step 2 output, optional)
-- **`outputs/`**: Generated parameter files for Processing
-  - `current_parameters.json` (latest parameters)
-  - `parameter_history/` (timestamped snapshots)
-
-## Data Format Specifications
-
-### EEG Data (.npy files)
-- **Shape**: `(8, N)` where N = samples
-  - For 5-second segments: N = 3200 (at 640 Hz)
-  - For longer recordings: N = arbitrary length
-- **Data type**: `float32` or `float64`
-- **Range**: Normalized to approximately [-1, 1]
-- **Channels**: 8 EEG frequency bands
-
-### Audio Data (.wav files)
-- **Sample rate**: 44,100 Hz (or 22,050 Hz)
-- **Channels**: Mono or stereo
-- **Duration**: 5 seconds (for training pairs)
-- **Format**: Uncompressed WAV
-
-### Hexadecimal EEG
-- **Encoding**: Little-endian int16 by default
-- **Structure**: Continuous hex stream (e.g., `a3f201cd...`)
-- **Channels**: 8 channels interleaved
-
-## Example Data Generation
-
-To generate synthetic test data:
+To see the layout filled in, generate a simulated study:
 
 ```bash
-python scripts/generate_test_data.py --output data/
+python scripts/generate_test_data.py --output demo_data
 ```
 
-This will create sample files in the appropriate directories for testing the pipeline.
+## EEG recordings
+
+Wherever a recording is expected, any of these is accepted:
+
+| File | Content |
+|------|---------|
+| `.txt`, `.hex` | the headset's log as hexadecimal text: `AA AA 04 80 02 00 52 2B …` (spaces, line breaks, `0x` prefixes or no separators at all) |
+| `.bin` | the same byte stream in binary |
+| `.npy`, one dimension | raw signal already at 640 Hz |
+| `.npy`, shape `(8, samples)` | band envelopes you computed yourself |
+
+Hex logs are the normal case; nothing needs converting by hand.
+
+## `step1_hex_eeg/`
+
+Logs to convert and check with Step 1. Output goes to `converted/`:
+`<name>_segment_0000.npy` … (each 8×3200) and `conversion_report.json`.
+
+## `step2_viewer_training/`
+
+```
+eeg/            one log per listening session
+audio/          the music that was played (.wav)
+annotations/annotations.json
+```
+
+```json
+{
+  "sessions": [
+    {
+      "eeg_file": "step2_viewer_training/eeg/G1_1-4 25-09-11-2036.txt",
+      "audio_file": "step2_viewer_training/audio/bach_bwv848.wav",
+      "enjoyed": [[12.0, 18.5], 41.0, 55.5],
+      "audio_offset": 0.0
+    }
+  ]
+}
+```
+
+- `enjoyed` — the moments the listener named: a time in seconds from the start
+  of the EEG recording, or a `[start, end]` interval.
+- `audio_offset` — seconds to add to an EEG time to get the matching audio
+  time, if the music did not start with the recording.
+- Paths are relative to the data folder (or absolute).
+
+Pre-cut five-second pairs are accepted as well:
+
+```json
+{"samples": [{"eeg_file": "…/clip_001.npy", "audio_file": "…/clip_001.wav", "enjoyed": true}]}
+```
+
+## `step3_article_reading/`
+
+```
+article.txt     the article; passages are separated by blank lines
+eeg/            one log per reader
+sessions.json   optional
+results/        written by Step 3
+```
+
+Without `sessions.json` every log in `eeg/` is one reader who read the article
+from the start to the end of the recording. Use it when that is not so:
+
+```json
+{
+  "sessions": [
+    {"eeg_file": "step3_article_reading/eeg/reader01.txt", "reading_start": 4.0, "reading_end": 212.0},
+    {"eeg_file": "step3_article_reading/eeg/reader02.txt", "passage_times": [[0, 31.5], [31.5, 60.2], [60.2, 97.0]]}
+  ]
+}
+```
+
+Results: `<reader>_enjoyment.json` (a score per window) and
+`passage_scores.json` (the ranking, with the `excellent` and `control`
+passages by index, starting at 0).
+
+Rank one article at a time: move the previous article's reader logs elsewhere
+before adding a new `article.txt`.
+
+## `step4_creator_training/`
+
+```
+eeg/            the creator's logs and keystroke logs
+annotations/    one .json per writing session
+annotations/derived/   labels produced automatically (do not edit; regenerated)
+```
+
+A session to be labelled automatically:
+
+```json
+{
+  "session_id": "creator_session_001",
+  "eeg_file": "step4_creator_training/eeg/creator_session_001.txt",
+  "keystroke_log": "step4_creator_training/eeg/creator_session_001_keystrokes.jsonl",
+  "article": "step3_article_reading/article.txt"
+}
+```
+
+The keystroke log is JSON lines (or one JSON array). Each entry has a time and
+how much had been written by then:
+
+```json
+{"t": 12.4, "length": 153}
+{"t": 14.1, "text": "The whole document so far…"}
+{"timestamp": 1757613000.2, "key": "a"}
+```
+
+- time: `t` in seconds from the start of the EEG recording, or `timestamp` as
+  Unix time together with `"started_at"` (the recording's start) in the session file;
+- progress: `length` (characters so far), `text` (the document so far) or
+  `key` (one key press; `Backspace` counts backwards).
+
+Instead of a keystroke log you can state directly when each passage was written:
+
+```json
+"writing_timeline": [{"passage": 0, "start_time": 0.0, "end_time": 95.2}, {"passage": 1, "start_time": 95.2, "end_time": 171.0}]
+```
+
+A session labelled by hand:
+
+```json
+{
+  "eeg_file": "step4_creator_training/eeg/creator_session_002.txt",
+  "excellent_passages": [
+    {"start_time": 120.5, "end_time": 150.0, "label": "creatable"},
+    {"start_time": 300.0, "end_time": 330.0, "label": "not_creatable"}
+  ]
+}
+```
+
+Both kinds may be mixed; the model needs examples of both labels.
+
+## `step5_image_training/`
+
+```
+artworks/       artwork_01.png, artwork_02.jpg, …
+brainwaves/     recordings made while viewing them
+metadata.json   optional: your own parameters per artwork
+```
+
+A recording belongs to the artwork whose name it carries. Any of:
+
+```
+brainwaves/artwork_01.txt
+brainwaves/artwork_01__anna.txt
+brainwaves/anna/artwork_01.txt        (recommended: one folder per participant)
+```
+
+Recordings in the same folder are treated as one sitting and share a baseline,
+which is what preserves the differences between artworks — so keep each
+participant in their own folder. Recordings must last at least five seconds;
+from longer ones (ten seconds is typical) the middle is used.
+
+`metadata.json` maps artwork names to parameters; artworks without an entry
+are analysed automatically:
+
+```json
+{
+  "artwork_01": {
+    "cellSize": 32,
+    "noiseScale": 0.01,
+    "backgroundHue": 210,
+    "palette": [{"h": 210, "s": 65, "b": 95}, {"h": 35, "s": 85, "b": 96}]
+  }
+}
+```
+
+Missing parameters take their default; values outside the safe range are
+clamped. The 50 parameter names and ranges are listed in
+`scripts/processing_templates/dynamic_texture_osc/data/parameter_schema.json`.
+
+## `step6_realtime/`
+
+```
+models/     viewer_model.pt, creator_model.pt, parameter_model.pt
+            <model>.history.json   losses and held-out scores of the last training
+            pipeline_state.json    which steps are up to date
+outputs/    current_parameters.json   what the display is showing (the sketch watches this)
+            workflow.log
+sessions/<date-time>/
+            eeg.txt           the session's EEG, in the headset's hex format
+            events.jsonl      one line per evaluated window
+            keystrokes.jsonl  how the watched document grew (with --watch-document)
+            article.txt       the document at the end of the session
+            session.json      settings, measured sampling rate, summary
+```
+
+A line of `events.jsonl`:
+
+```json
+{"t": 45.0, "state": "creatable", "is_creatable": true, "probability": 0.93, "smoothed_probability": 0.72,
+ "updated": true, "reason": "", "quality": {"ok": true, "reason": "ok", "poor_fraction": 0.0, "clip_fraction": 0.0, "artifact_fraction": 0.01},
+ "parameters": {"palette_1_h": 212.4, "cellSize": 28.0, "…": 0}}
+```

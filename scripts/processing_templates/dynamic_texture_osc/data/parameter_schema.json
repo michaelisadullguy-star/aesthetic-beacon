@@ -1,0 +1,402 @@
+[
+  {
+    "name": "palette_1_h",
+    "min": 0.0,
+    "max": 360.0,
+    "default": 210.0,
+    "integer": false,
+    "circular": true
+  },
+  {
+    "name": "palette_1_s",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 65.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_1_b",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 95.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_2_h",
+    "min": 0.0,
+    "max": 360.0,
+    "default": 310.0,
+    "integer": false,
+    "circular": true
+  },
+  {
+    "name": "palette_2_s",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 70.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_2_b",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 95.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_3_h",
+    "min": 0.0,
+    "max": 360.0,
+    "default": 35.0,
+    "integer": false,
+    "circular": true
+  },
+  {
+    "name": "palette_3_s",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 85.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_3_b",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 96.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_4_h",
+    "min": 0.0,
+    "max": 360.0,
+    "default": 160.0,
+    "integer": false,
+    "circular": true
+  },
+  {
+    "name": "palette_4_s",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 55.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palette_4_b",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 90.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "cellSize",
+    "min": 12.0,
+    "max": 72.0,
+    "default": 24.0,
+    "integer": true,
+    "circular": false
+  },
+  {
+    "name": "cellScaleJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.38,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "cellRotationJitter",
+    "min": 0.0,
+    "max": 1.5,
+    "default": 0.55,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "cellOffsetJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.3,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "cornerRadiusJitter",
+    "min": 0.0,
+    "max": 8.0,
+    "default": 2.8,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "palettePhaseJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.28,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "noiseScale",
+    "min": 0.001,
+    "max": 0.03,
+    "default": 0.006,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "noiseSpeed",
+    "min": 0.02,
+    "max": 1.0,
+    "default": 0.18,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "noiseOctaves",
+    "min": 1.0,
+    "max": 6.0,
+    "default": 5.0,
+    "integer": true,
+    "circular": false
+  },
+  {
+    "name": "noiseFalloff",
+    "min": 0.3,
+    "max": 0.7,
+    "default": 0.52,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "colorCycleSpeed",
+    "min": 0.02,
+    "max": 1.5,
+    "default": 0.45,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "paletteSpread",
+    "min": 0.0,
+    "max": 180.0,
+    "default": 85.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "saturationJitter",
+    "min": 0.0,
+    "max": 50.0,
+    "default": 18.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "brightnessJitter",
+    "min": 0.0,
+    "max": 50.0,
+    "default": 26.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "textureDepth",
+    "min": 0.1,
+    "max": 2.0,
+    "default": 0.7,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "fillAlpha",
+    "min": 15.0,
+    "max": 100.0,
+    "default": 60.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "cornerRadius",
+    "min": 0.0,
+    "max": 24.0,
+    "default": 5.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentThreshold",
+    "min": 0.45,
+    "max": 0.95,
+    "default": 0.72,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentLayers",
+    "min": 0.0,
+    "max": 6.0,
+    "default": 3.0,
+    "integer": true,
+    "circular": false
+  },
+  {
+    "name": "accentScale",
+    "min": 0.5,
+    "max": 4.0,
+    "default": 2.2,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentStrokeWeight",
+    "min": 0.5,
+    "max": 5.0,
+    "default": 1.6,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentAlpha",
+    "min": 0.0,
+    "max": 90.0,
+    "default": 45.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.35,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentDrift",
+    "min": 0.0,
+    "max": 1.5,
+    "default": 0.5,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentPhaseJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.4,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "accentRadiusJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.4,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlayBands",
+    "min": 0.0,
+    "max": 12.0,
+    "default": 6.0,
+    "integer": true,
+    "circular": false
+  },
+  {
+    "name": "overlayNoiseScale",
+    "min": 0.001,
+    "max": 0.02,
+    "default": 0.0035,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlayAmplitude",
+    "min": 0.0,
+    "max": 120.0,
+    "default": 42.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlayAlpha",
+    "min": 0.0,
+    "max": 70.0,
+    "default": 32.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlaySpeed",
+    "min": 0.02,
+    "max": 1.2,
+    "default": 0.4,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlayStep",
+    "min": 6.0,
+    "max": 48.0,
+    "default": 14.0,
+    "integer": true,
+    "circular": false
+  },
+  {
+    "name": "overlayStrokeScale",
+    "min": 0.5,
+    "max": 6.0,
+    "default": 3.4,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "overlayAlphaJitter",
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.4,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "backgroundHue",
+    "min": 0.0,
+    "max": 360.0,
+    "default": 210.0,
+    "integer": false,
+    "circular": true
+  },
+  {
+    "name": "backgroundSaturation",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 18.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "backgroundBrightness",
+    "min": 0.0,
+    "max": 100.0,
+    "default": 8.0,
+    "integer": false,
+    "circular": false
+  },
+  {
+    "name": "backgroundAlpha",
+    "min": 20.0,
+    "max": 100.0,
+    "default": 100.0,
+    "integer": false,
+    "circular": false
+  }
+]

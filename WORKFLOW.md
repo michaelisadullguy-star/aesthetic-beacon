@@ -1,616 +1,288 @@
-# Aesthetic Beacon: Complete Workflow Guide
+# Aesthetic Beacon: workflow guide
 
-This guide walks you through the complete 6-step EEG-based creative feedback workflow.
+How to run each step, what it expects and what it tells you. The file formats
+are described in [data/README.md](data/README.md).
 
-## Overview
-
-The Aesthetic Beacon system uses EEG data to create a real-time creative feedback loop:
-
-1. **Step 1**: Convert hexadecimal EEG data to numpy arrays
-2. **Step 2**: Train a "to viewer" model (predicts aesthetic enjoyment from EEG + audio)
-3. **Step 3**: Evaluate participants' EEG during article reading to identify best passages
-4. **Step 4**: Train a "to creator" model (detects creatable brainwave states)
-5. **Step 5**: Train EEG → Processing parameters model (maps brainwaves to visuals)
-6. **Step 6**: Real-time feedback loop (update visuals based on creator's EEG)
-
----
-
-## Prerequisites
-
-### Software Requirements
+## Set-up
 
 ```bash
-# Python dependencies
-pip install torch numpy pillow tqdm python-osc
-
-# Processing (for visualization)
-# Download from: https://processing.org/download
-# Install oscP5 library: Sketch → Import Library → Manage Libraries → oscP5
+pip install -r requirements.txt
 ```
 
-### Hardware Requirements
+- **Python** 3.10 or newer. `torch`, `numpy`, `scipy` and `Pillow` are needed
+  for everything; `pyserial` only to read the headset live from a serial port.
+- **Processing** 4 for the display. No extra library is required.
+- All commands are run from the repository root. Add `--config my.json` to use
+  your own settings; a configuration file only needs the values it changes
+  (see `config.example.json`).
 
-- EEG headset (8 channels, 640 Hz sampling rate)
-- Computer capable of running PyTorch models in real-time
-- Display for Processing visualization
-
----
-
-## Quick Start (with Test Data)
-
-### 1. Generate Test Data
+## One command
 
 ```bash
-# Generate synthetic test data for all steps
-python scripts/generate_test_data.py --output data/
-
-# Or generate data for a specific step
-python scripts/generate_test_data.py --step 5 --num-samples 100
-```
-
-### 2. Run Individual Steps
-
-```bash
-# Step 1: Convert hex EEG to numpy
-python src/workflow_orchestrator.py --step 1 --input data/step1_hex_eeg
-
-# Step 2: Train viewer model
-python src/workflow_orchestrator.py --step 2 --train
-
-# Step 3: Evaluate article reading
-python src/workflow_orchestrator.py --step 3
-
-# Step 4: Train creator model
-python src/workflow_orchestrator.py --step 4 --train
-
-# Step 5: Train parameter model
-python src/workflow_orchestrator.py --step 5 --train
-
-# Step 6: Real-time feedback
-python src/workflow_orchestrator.py --step 6 --realtime
-```
-
-### 3. Run Complete Workflow
-
-```bash
-# Execute all steps sequentially
 python src/workflow_orchestrator.py --all
 ```
 
+runs Steps 1–5. A step is skipped when neither its inputs nor its settings
+changed since it last succeeded (`--force` redoes everything). Add
+`--source …` to continue straight into the live loop. If something is missing,
+the run stops with a message saying what and where — `--check` shows the same
+overview without running anything.
+
+`--quick` trains small models in a fraction of the time; use it to try things
+out, not for the models you keep.
+
 ---
 
-## Detailed Step-by-Step Instructions
+## Step 1 — convert the headset logs
 
-### Step 1: Hexadecimal EEG Conversion
-
-**Purpose**: Convert raw EEG data from hex format to 8×3200 numpy arrays.
-
-**Input**:
-- Hex files in `data/step1_hex_eeg/*.hex`
-- Format: Plain text hexadecimal (little-endian int16)
-
-**Output**:
-- Numpy files in `data/step1_hex_eeg/converted/*.npy`
-- Shape: (8, 3200) for each 5-second segment
-
-**Run**:
 ```bash
-python src/workflow_orchestrator.py --step 1
+python src/workflow_orchestrator.py --step 1 --input path/to/logs
 ```
 
-**Python API**:
+Decodes every `.txt` / `.hex` / `.bin` recording in the folder (default
+`data/step1_hex_eeg`) and writes its consecutive five-second segments as
+`<name>_segment_0000.npy`, each an 8×3200 matrix of band amplitudes.
+
+Read the summary line of each file:
+
+```
+session_001.txt: 59.8 s → 11 segments (10 clean)  [device runs at 512 Hz, resampled]
+```
+
+- *clean* segments pass the quality gate (contact, clipping, flat line, artefacts).
+- *device runs at … Hz* appears when the measured rate differs from 640 Hz.
+- *corrupt packets skipped* counts checksum failures; a few are normal over Bluetooth.
+- *poor headset contact* means the headset itself reported bad contact for more
+  than a tenth of the recording.
+
+The other steps read hex logs directly, so Step 1 is not a prerequisite for
+them. Its value is the quality report — run it on new recordings before
+relying on them.
+
 ```python
-from pipeline import decode_hex_eeg_segment, iter_brainwave_segments
+from src.pipeline import iter_brainwave_segments
 
-# Load hex data
-with open('session.hex', 'r') as f:
-    hex_data = f.read()
-
-# Convert all segments
-for i, segment in enumerate(iter_brainwave_segments(hex_data)):
-    print(f"Segment {i}: shape {segment.shape}")  # (8, 3200)
-    np.save(f'segment_{i}.npy', segment)
+for segment in iter_brainwave_segments(open("session.txt").read()):
+    print(segment.shape)        # (8, 3200)
 ```
 
----
+## Step 2 — the to-viewer model
 
-### Step 2: Train "To Viewer" Model
-
-**Purpose**: Learn which EEG patterns (during music listening) indicate aesthetic enjoyment.
-
-**Input**:
-- EEG segments: `data/step2_viewer_training/eeg/*.npy`
-- Audio clips: `data/step2_viewer_training/audio/*.wav`
-- Annotations: `data/step2_viewer_training/annotations/annotations.json`
-
-**Annotation Format**:
-```json
-{
-  "samples": [
-    {
-      "eeg_file": "step2_viewer_training/eeg/sample_001.npy",
-      "audio_file": "step2_viewer_training/audio/sample_001.wav",
-      "enjoyed": true
-    }
-  ]
-}
-```
-
-**Output**:
-- Trained model: `data/step6_realtime/models/viewer_model.pt`
-- Training history: `data/step6_realtime/models/viewer_model.history.json`
-
-**Run**:
 ```bash
 python src/workflow_orchestrator.py --step 2 --train
 ```
 
-**Python API**:
-```python
-from pipeline import ViewerSample, ViewerEnjoymentDataset, train_viewer_model
+Learns to tell enjoyed moments of listening from the rest of the same session.
+`annotations.json` lists each listening session with its EEG log, the audio
+file and the moments the listener named afterwards. Five-second windows around
+those moments are the positive examples; an equal number of windows elsewhere
+in the session, clear of every named moment, are the controls.
 
-# Create samples
-samples = [
-    ViewerSample(
-        brainwave_path='eeg/sample_001.npy',
-        audio_path='audio/sample_001.wav',
-        enjoyed=True
-    ),
-    # ... more samples
-]
+The model sees EEG and audio, but for a random half of the training examples
+the audio is withheld, so it also learns to judge from EEG alone — which is
+how Step 3 uses it.
 
-# Train
-dataset = ViewerEnjoymentDataset(samples)
-model, history = train_viewer_model(
-    dataset=dataset,
-    epochs=50,
-    batch_size=16,
-    lr=0.0001
-)
+Reported: accuracy and AUC on held-out listening moments, and `auc_eeg_only`
+for the EEG-only mode. An `auc_eeg_only` near 0.5 means the reading scores of
+Step 3 will be noise.
 
-# Save
-torch.save(model.state_dict(), 'viewer_model.pt')
-```
+## Step 3 — which passages did readers enjoy?
 
----
-
-### Step 3: Evaluate Article Reading EEG
-
-**Purpose**: Use the viewer model to find which article passages delivered best aesthetic enjoyment.
-
-**Input**:
-- Long EEG recordings: `data/step3_article_reading/eeg/*.npy`
-- Trained viewer model: `data/step6_realtime/models/viewer_model.pt`
-
-**Output**:
-- Enjoyment scores per time window: `data/step3_article_reading/results/*_enjoyment.json`
-
-**Result Format**:
-```json
-{
-  "session_id": "participant_001_article",
-  "windows": [
-    {"start_time": 0.0, "end_time": 5.0, "enjoyment_score": 0.87},
-    {"start_time": 1.0, "end_time": 6.0, "enjoyment_score": 0.92}
-  ]
-}
-```
-
-**Run**:
 ```bash
-python src/workflow_orchestrator.py --step 3 --input data/step3_article_reading/eeg/participant_001.npy
+python src/workflow_orchestrator.py --step 3
 ```
 
-**Python API**:
-```python
-from pipeline import evaluate_enjoyment_windows
+Slides the viewer model over each reader's recording (five-second windows, one
+second apart) and writes `<reader>_enjoyment.json`. If `article.txt` is
+present, the windows are assigned to passages — paragraphs separated by blank
+lines — and the passages are ranked in `passage_scores.json`.
 
-# Load model
-model = ViewerEnjoymentModel()
-model.load_state_dict(torch.load('viewer_model.pt'))
+- Which passage a reader was on is estimated from a steady reading speed,
+  dividing the recording among the passages by their length. If you know
+  better, give `passage_times` (or just `reading_start` / `reading_end`) per
+  reader in `sessions.json`.
+- Each reader's scores are standardised against their own average before
+  readers are combined, so one generally enthusiastic reader does not decide
+  the ranking.
+- The top 30 % of passages are marked *excellent* (★) and equally many at the
+  bottom become the *controls* (·); `step3.excellent_fraction` changes that.
 
-# Load EEG
-eeg = np.load('participant_001_reading.npy')
+`--input path/to/one_recording.txt` scores a single recording.
 
-# Evaluate
-windows = evaluate_enjoyment_windows(
-    model=model,
-    brainwave_array=eeg,
-    window_size=5.0,  # seconds
-    stride=1.0,       # seconds
-    device='cuda'
-)
+## Step 4 — the to-creator model
 
-# Find best moments
-top_windows = sorted(windows, key=lambda w: w.enjoyment_score, reverse=True)[:5]
-for w in top_windows:
-    print(f"{w.start_time:.1f}s - {w.end_time:.1f}s: {w.enjoyment_score:.3f}")
-```
-
----
-
-### Step 4: Train "To Creator" Model
-
-**Purpose**: Learn which EEG patterns indicate the creator is in a "creatable" state.
-
-**Input**:
-- Creator EEG: `data/step4_creator_training/eeg/*.npy`
-- Annotations: `data/step4_creator_training/annotations/*.json`
-
-**Annotation Format**:
-```json
-{
-  "session_id": "creator_session_001",
-  "eeg_file": "step4_creator_training/eeg/creator_session_001.npy",
-  "excellent_passages": [
-    {
-      "start_time": 120.5,
-      "end_time": 125.5,
-      "content": "The passage written during this time",
-      "label": "creatable"
-    }
-  ]
-}
-```
-
-**Output**:
-- Trained model: `data/step6_realtime/models/creator_model.pt`
-
-**Run**:
 ```bash
 python src/workflow_orchestrator.py --step 4 --train
 ```
 
-**Python API**:
-```python
-from pipeline import CreatorAnnotation, CreatorStateDataset, train_creator_model
+Labels come from two places and are combined:
 
-# Create annotations
-annotations = [
-    CreatorAnnotation(
-        brainwave_path='creator_eeg.npy',
-        start_time=120.5,
-        end_time=125.5,
-        is_creatable=True
-    ),
-    # ... more annotations
-]
+1. **Automatic.** For every writing session described in
+   `step4_creator_training/annotations/` (or recorded by Step 6 with
+   `--watch-document`) whose article is the one ranked in Step 3: the keystroke
+   log gives the time each passage was written; time spent on excellent
+   passages is labelled *creatable*, time spent on control passages *not
+   creatable*. The result is saved under `annotations/derived/`, so it stays
+   part of the training data when you move on to the next article.
+2. **Manual.** Stretches you marked yourself under `excellent_passages`.
 
-# Train
-dataset = CreatorStateDataset(annotations, sample_rate=640)
-model, history = train_creator_model(
-    dataset=dataset,
-    epochs=50,
-    batch_size=16
-)
+Each labelled stretch is cut into overlapping five-second windows. Band levels
+are expressed relative to the creator's **reference profile**: their typical
+band levels across all training sessions, stored inside the model. For each
+session the profile is shifted by that session's overall signal level
+(electrode contact) and allowed to follow the session's own band levels by a
+quarter (`baseline_adaptation` in `src/eeg_features.py`). Training windows and
+live windows are computed the same way. Anchoring to a fixed profile is what
+lets the model tell an hour of rest from an hour of flow; a baseline taken
+from the session alone would make either look "normal".
 
-# Save
-torch.save(model.state_dict(), 'creator_model.pt')
-```
+Reported: accuracy and AUC on held-out stretches. Below an AUC of 0.6 a warning
+tells you the live loop will fire rarely or at random.
 
----
+## Step 5 — EEG to Processing parameters
 
-### Step 5: Train EEG → Processing Parameters Model
-
-**Purpose**: Learn mapping from EEG (viewing images) to Processing visual parameters.
-
-**Input**:
-- EEG responses: `data/step5_image_training/brainwaves/*.npy`
-- Artwork images: `data/step5_image_training/artworks/*.png`
-- Metadata: `data/step5_image_training/metadata.json`
-
-**Metadata Format**:
-```json
-{
-  "artwork_001.png": {
-    "canvasWidth": 800,
-    "canvasHeight": 800,
-    "noiseScale": 0.015,
-    "colorCycleSpeed": 0.002,
-    "cellSize": 40,
-    ...
-  }
-}
-```
-
-**Important**: Filenames must match!
-- `brainwaves/sample_001.npy` ↔ `artworks/sample_001.png`
-
-**Output**:
-- Trained model: `data/step6_realtime/models/parameter_model.pt`
-
-**Run**:
 ```bash
 python src/workflow_orchestrator.py --step 5 --train
 ```
 
-**Python API**:
-```python
-from pipeline import train_processing_parameter_model
+Pairs EEG recorded while looking at an artwork with the parameter set that
+makes the sketch echo that artwork. From each recording the middle five seconds
+are used (plus four windows shifted by up to a second), avoiding the eye-opening
+at the start and the anticipation at the end.
 
-# Train
-model, history, param_names = train_processing_parameter_model(
-    dataset_root='data/step5_image_training',
-    epochs=100,
-    batch_size=8,
-    lr=0.001
-)
+The parameters of an artwork come from, in order of preference:
 
-# Save
-torch.save({
-    'model_state': model.state_dict(),
-    'param_names': param_names
-}, 'parameter_model.pt')
-```
+1. `metadata.json` next to the artworks — your own values;
+2. a CNN trained with `python -m src.train_processing_features` (`step5.processing_weights`);
+3. direct analysis of the image: the largest colour area becomes the
+   background, the next four the palette, and contrast, edge density, grain
+   and edge directions set the texture parameters.
 
----
+To see and edit what the analysis produces:
 
-### Step 6: Real-Time Feedback Loop
-
-**Purpose**: Update Processing visuals in real-time based on creator's EEG state.
-
-**Prerequisites**:
-1. Trained creator model (Step 4)
-2. Trained parameter model (Step 5)
-3. Processing sketch running with OSC enabled
-
-**Setup**:
-
-**A. Start Processing Sketch**:
-```processing
-// Open: scripts/processing_templates/dynamic_texture_osc.pde
-// In Processing IDE: Sketch → Run
-// Press 'O' to show OSC status overlay
-```
-
-**B. Start Python Feedback Loop**:
 ```bash
-python src/workflow_orchestrator.py --step 6 --realtime
+python tools/export_cnn_predictions_as_metadata.py --artworks-dir data/step5_image_training/artworks --output data/step5_image_training/metadata.json
 ```
 
-**How it Works**:
-1. Python reads EEG every 5 seconds (from your EEG headset)
-2. Creator model predicts if you're in "creatable" state
-3. If creatable: Parameter model generates Processing parameters from EEG
-4. Parameters sent to Processing via OSC
-5. Visuals update in real-time
+Reported: `skill`, comparing the held-out error with always predicting the
+average parameter set. 0 means the EEG adds nothing; with few artworks expect
+it to be low. The model starts from the average set, so a weak model shows a
+steady, average texture rather than noise.
 
-**Python API**:
+## Step 6 — the live loop
+
+```bash
+python src/workflow_orchestrator.py --step 6 --realtime --source serial:/dev/ttyUSB0
+```
+
+Start the sketch (`scripts/processing_templates/dynamic_texture_osc`, **Run**)
+either before or after; `--launch-sketch` starts it for you if
+`processing-java` is on the PATH.
+
+What you see in the terminal:
+
+```
+Headset sampling rate: 512 Hz (measured from the headset's status packets); resampling to 640 Hz
+[    5.0s] state: CALIBRATING (5s of 20s)
+[   45.0s] state: CREATABLE
+[   45.0s] p(creatable)=0.93  smoothed=0.72  → parameters updated
+[   90.0s] state: IDLE
+[   90.0s] p(creatable)=0.08  smoothed=0.31  · holding
+[  120.0s] state: BAD SIGNAL (poor_contact)
+```
+
+| State | Meaning | Display |
+|-------|---------|---------|
+| calibrating | measuring the session's signal level (first 20 s of clean signal) | default texture |
+| creatable | probability above the threshold | new parameters every interval |
+| idle | not creatable | keeps the last parameters |
+| bad signal | the window failed the quality gate | keeps the last parameters |
+| no signal | nothing received for 3 s; reconnecting | keeps the last parameters |
+
+Useful options: `--duration 600` stops after ten minutes, `--no-osc` writes the
+parameter file only, `--no-record` keeps nothing, `--watch-document draft.txt`
+logs your writing, `--record-only` records without models or display.
+
+Settings (`step6` in the configuration):
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `creatable_threshold` | 0.6 | probability at which the state is entered |
+| `release_threshold` | threshold − 0.1 | probability below which it is left |
+| `probability_smoothing` | 0.6 | weight of the newest window; 1 = no smoothing |
+| `parameter_smoothing` | 0.6 | how far each update moves towards the new prediction |
+| `update_interval` | 5.0 | seconds between evaluations (windows are always 5 s) |
+| `calibration_seconds` | 20 | clean signal needed before the first decision |
+
+Lower `update_interval` (for example to 1) for a more responsive beacon; the
+windows then overlap.
+
+### From your own code
+
 ```python
-from pipeline import run_feedback_loop
-from osc_bridge import create_bridge
+from src.model import load_checkpoint
+from src.pipeline import run_feedback_loop
 
-# Load models
-creator_model = CreatorStateModel()
-creator_model.load_state_dict(torch.load('creator_model.pt'))
+creator, _ = load_checkpoint("data/step6_realtime/models/creator_model.pt", kind="creator")
+parameters, _ = load_checkpoint("data/step6_realtime/models/parameter_model.pt", kind="parameter")
 
-parameter_model = BrainwaveToProcessingModel(num_params=40)
-checkpoint = torch.load('parameter_model.pt')
-parameter_model.load_state_dict(checkpoint['model_state'])
-param_names = checkpoint['param_names']
+def show(parameter_set, is_creatable):
+    print(is_creatable, parameter_set["cellSize"])
 
-# Create OSC bridge
-bridge = create_bridge(use_osc=True)
-
-# Define EEG supplier (replace with your hardware interface)
-def get_eeg():
-    # Read from your EEG headset
-    # Return: numpy array of shape (8, 3200)
-    return my_eeg_headset.read_segment()
-
-# Define callback
-def update_processing(parameters, is_creatable):
-    bridge.send_state_change(is_creatable, confidence=1.0)
-    if is_creatable:
-        bridge.send_parameters(parameters)
-
-# Run loop
 run_feedback_loop(
-    creator_model=creator_model,
-    parameter_model=parameter_model,
-    parameter_names=param_names,
-    eeg_supplier=get_eeg,
-    update_callback=update_processing,
+    my_band_matrices,            # any iterable of (8, 3200) arrays
+    creator_model=creator,
+    parameter_model=parameters,
+    update_callback=show,
     creatable_threshold=0.6,
-    update_interval=5.0
 )
 ```
 
----
-
-## Configuration
-
-### Using Configuration Files
-
-Create a custom configuration file:
-
-```json
-{
-  "device": "cuda",
-  "step5": {
-    "epochs": 200,
-    "batch_size": 16,
-    "learning_rate": 0.0005
-  },
-  "step6": {
-    "creatable_threshold": 0.7,
-    "update_interval": 3.0,
-    "osc_port": 12000
-  }
-}
-```
-
-Run with custom config:
-```bash
-python src/workflow_orchestrator.py --config my_config.json --step 5 --train
-```
+`run_feedback_loop` takes prepared band matrices. For the complete chain from
+raw bytes use `src.realtime.RealtimeSession`, as the orchestrator does.
 
 ---
 
-## Data Collection Guidelines
+## Connecting the headset
 
-### Collecting Real EEG Data
-
-**For Step 2 (Viewer Model)**:
-1. Participants listen to music while wearing EEG headset
-2. Record 5-second EEG segments + corresponding audio
-3. After each clip, ask: "Did you enjoy this?" (yes/no)
-4. Save EEG as `.npy`, audio as `.wav`, annotation as JSON
-
-**For Step 3 (Article Reading)**:
-1. Participants read your article while wearing EEG headset
-2. Record continuous EEG throughout reading session
-3. Save as single `.npy` file (shape: 8 × N samples)
-
-**For Step 4 (Creator Model)**:
-1. Wear EEG headset while writing/creating
-2. Record continuous EEG + keystroke log with timestamps
-3. After session, manually review and mark 5-second windows where "excellent" content was produced
-4. Label as "creatable" or "not_creatable"
-
-**For Step 5 (Processing Parameters)**:
-1. Participants view images while wearing EEG headset
-2. Record 5-second EEG for each image
-3. Use `processing_features.py` to compute Processing parameters from each image
-4. Save: EEG as `.npy`, image as `.png`, parameters in `metadata.json`
-
----
+- **USB dongle / Bluetooth serial port:** `--source serial:/dev/ttyUSB0`
+  (Linux), `serial:/dev/tty.<name>` (macOS), `serial:COM3` (Windows). The
+  default is 57600 baud; append `@115200` or similar if your module differs.
+- **You already log with another tool:** let it write its hex log and use
+  `--source follow:/path/to/that/log.txt`.
+- **Fixed sampling rate:** if the stream carries no status packets and the rate
+  cannot be measured, set `features.device_sample_rate` in the configuration.
+- **Mains hum:** 50 Hz is filtered out by default because it lies inside the γ2
+  band. Set `features.notch_hz` to 60 where the mains run at 60 Hz, or to
+  `null` to disable. Changing it requires retraining.
 
 ## Troubleshooting
 
-### Common Issues
+**`Cannot continue: …`** — every step stops with a message naming the missing
+file or the malformed entry. `--check` gives the overview.
 
-**"OSC not available"**:
-```bash
-pip install python-osc
-```
+**Step 1 says "no headset packets found — decoded as legacy 8-channel dump".**
+The file does not contain `AA AA …` packets. It is treated as eight interleaved
+16-bit channels, the format older versions of this repository assumed.
 
-**"No .hex files found"**:
-- Check input directory path
-- Ensure files have `.hex` extension
-- Generate test data: `python scripts/generate_test_data.py`
+**All windows are "bad signal".** Look at the reason in brackets:
+`poor_contact` — the headset reports bad contact, re-seat the electrode and ear
+clip; `flatline` — no signal at all; `clipping` — the amplifier saturates;
+`artifact` — strong movement.
 
-**"Annotations file not found"**:
-- Create annotations file following format in this guide
-- Or generate test data with: `python scripts/generate_test_data.py --step 2`
+**The state never becomes creatable.** Check the creator model's AUC in
+`creator_model.history.json`. If it is good, lower `creatable_threshold`
+slightly; if it is poor, record more writing sessions.
 
-**Processing sketch not receiving OSC**:
-- Check OSC port matches (default: 12000)
-- Ensure oscP5 library is installed in Processing
-- Press 'O' in Processing to show OSC status
-- Check firewall settings
+**The sketch does not react.** Press **O**: the overlay shows whether the UDP
+port is open and when the last update arrived, and through which route. "UDP
+unavailable" usually means a second copy of the sketch is running. If the
+sketch was moved out of the repository, set `LIVE_PARAM_FILE` at its top to the
+absolute path of `current_parameters.json`.
 
-**CUDA out of memory**:
-- Reduce batch size in config
-- Use CPU instead: `"device": "cpu"`
+**The sketch window stays black or does not open.** Change `RENDERER` at the
+top of the sketch from `P2D` to `JAVA2D`.
 
----
-
-## Advanced Usage
-
-### Custom EEG Hardware Integration
-
-Replace the mock EEG supplier in Step 6:
-
-```python
-# Example: OpenBCI integration
-import brainflow
-
-def get_eeg_from_openbci():
-    board = brainflow.BoardShim(...)
-    board.prepare_session()
-    board.start_stream()
-
-    while True:
-        # Read 5 seconds of data
-        data = board.get_board_data()
-        # Convert to (8, 3200) format
-        eeg_segment = preprocess_data(data)
-        yield eeg_segment
-```
-
-### Custom Parameter Mapping
-
-Modify Processing parameters based on specific EEG features:
-
-```python
-def custom_parameter_mapping(eeg_segment):
-    # Extract features
-    alpha_power = compute_band_power(eeg_segment, freq_band='alpha')
-
-    # Map to parameters
-    params = {
-        'colorCycleSpeed': alpha_power * 0.01,
-        'noiseScale': 0.01 + (beta_power * 0.005),
-        # ... custom mappings
-    }
-    return params
-```
-
----
-
-## Performance Optimization
-
-### GPU Acceleration
-
-```python
-# Use mixed precision for faster training
-model, history = train_viewer_model(
-    dataset=dataset,
-    epochs=50,
-    use_amp=True,  # Automatic Mixed Precision
-    device='cuda'
-)
-```
-
-### Batch Processing
-
-Process multiple files in parallel:
-
-```python
-from multiprocessing import Pool
-
-def process_file(file_path):
-    # Process single file
-    pass
-
-with Pool(8) as p:
-    p.map(process_file, file_paths)
-```
-
----
-
-## Citation
-
-If you use this workflow in your research, please cite:
-
-```bibtex
-@software{aesthetic_beacon,
-  title={Aesthetic Beacon: EEG-Based Creative Feedback System},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/your-repo/aesthetic-beacon}
-}
-```
-
----
-
-## Support
-
-For issues and questions:
-- Check the troubleshooting section above
-- Review example code in this guide
-- Check the codebase documentation
-- Generate test data to verify your setup
-
----
-
-## Next Steps
-
-1. **Generate test data**: `python scripts/generate_test_data.py`
-2. **Train models**: Run Steps 2, 4, 5 with `--train`
-3. **Test real-time feedback**: Run Step 6 with Processing sketch
-4. **Collect real data**: Follow data collection guidelines
-5. **Refine models**: Re-train with your real EEG data
-
-Good luck with your creative experiments! 🎨🧠
+**Changing a parameter's range or adding one.** Edit `src/parameters.py`, run
+`python -m src.parameters` to regenerate the sketch's schema file, and retrain
+Step 5.

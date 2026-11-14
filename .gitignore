@@ -43,7 +43,9 @@ ENV/
 *.ckpt
 *.npy
 *.npz
-data/
+/data/
+/demo_data/
+runs/
 outputs/
 logs/
 *.log
@@ -51,3 +53,9 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test and tool caches
+.pytest_cache/
+
+# Frames saved by the Processing sketch
+scripts/processing_templates/*/frames/
