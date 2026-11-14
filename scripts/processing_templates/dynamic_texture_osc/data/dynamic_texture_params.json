@@ -1,6 +1,8 @@
 {
   "canvasWidth": 1080,
   "canvasHeight": 640,
+  "targetFrameRate": 60,
+  "smoothingSamples": 4,
   "cellSize": 24,
   "cellScaleJitter": 0.38,
   "cellRotationJitter": 0.55,
@@ -12,40 +14,53 @@
   "noiseOctaves": 5,
   "noiseFalloff": 0.52,
   "colorCycleSpeed": 0.45,
-  "paletteSpread": 85,
-  "saturationJitter": 18,
-  "brightnessJitter": 26,
+  "paletteSpread": 85.0,
+  "saturationJitter": 18.0,
+  "brightnessJitter": 26.0,
   "textureDepth": 0.7,
-  "fillAlpha": 60,
+  "fillAlpha": 60.0,
   "cornerRadius": 5.0,
   "accentThreshold": 0.72,
   "accentLayers": 3,
   "accentScale": 2.2,
   "accentStrokeWeight": 1.6,
-  "accentAlpha": 45,
+  "accentAlpha": 45.0,
   "accentJitter": 0.35,
   "accentDrift": 0.5,
   "accentPhaseJitter": 0.4,
   "accentRadiusJitter": 0.4,
   "overlayBands": 6,
   "overlayNoiseScale": 0.0035,
-  "overlayAmplitude": 42,
-  "overlayAlpha": 32,
+  "overlayAmplitude": 42.0,
+  "overlayAlpha": 32.0,
   "overlaySpeed": 0.4,
   "overlayStep": 14,
   "overlayStrokeScale": 3.4,
   "overlayAlphaJitter": 0.4,
-  "backgroundHue": 210,
-  "backgroundSaturation": 18,
-  "backgroundBrightness": 8,
-  "backgroundAlpha": 100,
-  "targetFrameRate": 60,
-  "smoothingSamples": 4,
+  "backgroundHue": 210.0,
+  "backgroundSaturation": 18.0,
+  "backgroundBrightness": 8.0,
+  "backgroundAlpha": 100.0,
   "palette": [
-    {"h": 210, "s": 65, "b": 95},
-    {"h": 310, "s": 70, "b": 95},
-    {"h": 35,  "s": 85, "b": 96},
-    {"h": 160, "s": 55, "b": 90},
-    {"h": 260, "s": 60, "b": 92}
+    {
+      "h": 210.0,
+      "s": 65.0,
+      "b": 95.0
+    },
+    {
+      "h": 310.0,
+      "s": 70.0,
+      "b": 95.0
+    },
+    {
+      "h": 35.0,
+      "s": 85.0,
+      "b": 96.0
+    },
+    {
+      "h": 160.0,
+      "s": 55.0,
+      "b": 90.0
+    }
   ]
 }

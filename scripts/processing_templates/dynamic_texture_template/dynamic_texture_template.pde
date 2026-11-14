@@ -1,5 +1,8 @@
 // Dynamic Texture Template for Processing
 //
+// Static version: parameters come from data/dynamic_texture_params.json only.
+// For the live, EEG-driven display use the dynamic_texture_osc sketch instead.
+//
 // This sketch demonstrates how to create a multi-layered, colour-rich texture
 // using animated Perlin noise. Parameters are loaded from a JSON file via the
 // loadParamsJSON() helper so that designers can iterate without recompiling.
@@ -14,6 +17,8 @@ ArrayList<OverlayBandData> overlayBandData = new ArrayList<OverlayBandData>();
 void settings() {
   loadParamsJSON();
   size(params.canvasWidth, params.canvasHeight, P2D);
+  // smooth() is only allowed here, not after the sketch has started.
+  smooth(params.smoothingSamples >= 8 ? 8 : (params.smoothingSamples >= 4 ? 4 : 2));
 }
 
 void setup() {
@@ -103,7 +108,7 @@ void drawNoiseOverlay(float timeSeconds) {
 
     float yBase = height * (band.position + 0.05f * sin(TWO_PI * (band.position + timePhase + band.offsetSeed)));
     beginShape();
-    for (int x = 0; x < width; x += params.overlayStep) {
+    for (int x = 0; x < width; x += max(1, params.overlayStep)) {
       float distort = noise(x * params.overlayNoiseScale, band.position * params.overlayNoiseScale, timePhase + band.noiseShift);
       float y = yBase + map(distort, 0, 1, -params.overlayAmplitude, params.overlayAmplitude);
       curveVertex(x, y);
@@ -226,8 +231,7 @@ void applyRuntimeParams() {
   if (surface != null) {
     surface.setSize(params.canvasWidth, params.canvasHeight);
   }
-  smooth(params.smoothingSamples);
-  frameRate(params.targetFrameRate);
+  frameRate(max(1, params.targetFrameRate));
   noiseDetail(params.noiseOctaves, params.noiseFalloff);
   preparePrecomputedAssets();
 }
@@ -245,6 +249,8 @@ void buildCellGrid() {
   int maxWidth = max(gridWidth, params.cellSize);
   int maxHeight = max(gridHeight, params.cellSize);
 
+  // A cell size of zero (e.g. from a mistyped JSON value) would loop forever.
+  params.cellSize = max(4, params.cellSize);
   for (int y = 0; y < maxHeight; y += params.cellSize) {
     for (int x = 0; x < maxWidth; x += params.cellSize) {
       if (x >= gridWidth || y >= gridHeight) {

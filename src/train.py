@@ -1,338 +1,103 @@
-"""Training script for brainwave-to-Processing regression."""
+"""Stand-alone training of the EEG → Processing parameter model (Step 5).
+
+Equivalent to ``workflow_orchestrator.py --step 5`` but with every option on
+the command line::
+
+    python -m src.train data/step5_image_training --output-dir runs/exp01 --epochs 150
+"""
 from __future__ import annotations
+
+if __package__ in (None, ""):  # executed as a script
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    __package__ = "src"
+    __import__("src")
 
 import argparse
 import json
+import logging
+import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
 
-import torch
-from torch import nn
-from torch.optim import AdamW
-from torch.utils.data import DataLoader, random_split
-
-from .brainwave_dataset import (
-    BrainwaveProcessingDataset,
-    RandomTimeCrop,
-    collate_pad_batch,
-    z_score_normalise,
-)
-from .model import BrainwaveToProcessingModel, create_model
+from .eeg_features import DEFAULT_FEATURE_CONFIG
+from .model import save_checkpoint
+from .pipeline import PipelineError, train_processing_parameter_model
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dataset", type=Path, help="Path to the dataset root directory.")
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("outputs"),
-        help="Directory where checkpoints and logs will be written.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="Number of samples per optimisation step.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=100,
-        help="Number of training epochs.",
-    )
-    parser.add_argument(
-        "--learning-rate",
-        type=float,
-        default=1e-3,
-        help="Initial learning rate for AdamW.",
-    )
-    parser.add_argument(
-        "--weight-decay",
-        type=float,
-        default=1e-2,
-        help="Weight decay regularisation applied by AdamW.",
-    )
-    parser.add_argument(
-        "--validation-split",
-        type=float,
-        default=0.2,
-        help="Fraction of the dataset reserved for validation.",
-    )
-    parser.add_argument(
-        "--hidden-channels",
-        type=int,
-        default=128,
-        help="Width of the temporal encoder hidden representation.",
-    )
-    parser.add_argument(
-        "--num-blocks",
-        type=int,
-        default=4,
-        help="Number of residual blocks in the encoder.",
-    )
-    parser.add_argument(
-        "--dropout",
-        type=float,
-        default=0.1,
-        help="Dropout probability applied in the prediction head.",
-    )
-    parser.add_argument(
-        "--crop-length",
-        type=int,
-        default=0,
-        help="Randomly crop each sample to this many timesteps (0 disables cropping).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device identifier, e.g. 'cpu' or 'cuda:0'.",
-    )
-    parser.add_argument(
-        "--grad-clip",
-        type=float,
-        default=1.0,
-        help="Clip gradient norm to this value (0 disables clipping).",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=4,
-        help="Number of worker processes for data loading.",
-    )
-    parser.add_argument(
-        "--amp",
-        action="store_true",
-        help="Enable automatic mixed precision training.",
-    )
-    parser.add_argument(
-        "--expected-channels",
-        type=int,
-        default=8,
-        help="Number of frequency channels expected in each brainwave recording.",
-    )
-    parser.add_argument(
-        "--expected-samples",
-        type=int,
-        default=3200,
-        help="Number of temporal samples per channel (3200 for five seconds at 640 Hz).",
-    )
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("dataset", type=Path, help="Dataset root with 'artworks/' and 'brainwaves/'.")
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs"), help="Where the model is written.")
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--learning-rate", type=float, default=5e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-2)
+    parser.add_argument("--validation-split", type=float, default=0.2)
+    parser.add_argument("--hidden-channels", type=int, default=128)
+    parser.add_argument("--num-blocks", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--patience", type=int, default=15, help="Stop after this many epochs without improvement.")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", type=str, default="auto", help="cpu, cuda or auto.")
     parser.add_argument(
         "--parameter-metadata",
         type=Path,
         default=None,
-        help="Path to JSON file with ground truth parameter annotations (recommended for static training).",
+        help="Curated artwork parameters (default: metadata.json in the dataset, if present).",
     )
     parser.add_argument(
         "--processing-weights",
         type=Path,
         default=None,
-        help="Path to the trained artwork preprocessing model checkpoint (used if --parameter-metadata not provided).",
+        help="Artwork CNN from train_processing_features.py, used for artworks without curated parameters.",
     )
-    return parser.parse_args()
+    # Options of earlier versions, accepted so existing command lines keep working.
+    for flag in ("--crop-length", "--grad-clip", "--num-workers", "--expected-channels", "--expected-samples"):
+        parser.add_argument(flag, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--amp", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
 
 
-def create_transforms(args: argparse.Namespace):
-    transforms = [z_score_normalise]
-    if args.crop_length > 0:
-        transforms.append(RandomTimeCrop(args.crop_length))
-
-    def apply_all(tensor: torch.Tensor) -> torch.Tensor:
-        for transform in transforms:
-            tensor = transform(tensor)
-        return tensor
-
-    return apply_all
-
-
-def build_dataloaders(
-    dataset: BrainwaveProcessingDataset,
-    validation_split: float,
-    batch_size: int,
-    num_workers: int,
-) -> tuple[DataLoader, Optional[DataLoader]]:
-    if validation_split <= 0:
-        loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=True,
-            collate_fn=collate_pad_batch,
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        model, history, names = train_processing_parameter_model(
+            args.dataset,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            validation_split=args.validation_split,
+            hidden_channels=args.hidden_channels,
+            num_blocks=args.num_blocks,
+            dropout=args.dropout,
+            patience=args.patience,
+            seed=args.seed,
+            device=args.device,
+            parameter_metadata=args.parameter_metadata,
+            processing_weights=args.processing_weights,
         )
-        return loader, None
+    except (PipelineError, FileNotFoundError, ValueError) as error:
+        print(f"Cannot train: {error}", file=sys.stderr)
+        return 1
 
-    validation_size = int(len(dataset) * validation_split)
-    training_size = len(dataset) - validation_size
-    train_dataset, val_dataset = random_split(dataset, [training_size, validation_size])
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=collate_pad_batch,
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    path = save_checkpoint(
+        args.output_dir / "best_model.pt",
+        kind="parameter",
+        model=model,
+        feature_config=DEFAULT_FEATURE_CONFIG,
+        extra={"metrics": history.metrics},
     )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=collate_pad_batch,
-    )
-    return train_loader, val_loader
-
-
-def evaluate(
-    model: BrainwaveToProcessingModel,
-    data_loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-) -> float:
-    model.eval()
-    total_loss = 0.0
-    total_samples = 0
-    with torch.no_grad():
-        for features, targets in data_loader:
-            features = features.to(device)
-            targets = targets.to(device)
-            outputs = model(features)
-            loss = criterion(outputs, targets)
-            batch_size = features.size(0)
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
-
-    return total_loss / max(total_samples, 1)
-
-
-def save_checkpoint(
-    state: Dict[str, Any],
-    output_dir: Path,
-    epoch: int,
-    is_best: bool,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / f"checkpoint_epoch_{epoch:04d}.pt"
-    torch.save(state, checkpoint_path)
-    if is_best:
-        best_path = output_dir / "best_model.pt"
-        torch.save(state, best_path)
-
-
-def main() -> None:
-    args = parse_args()
-    device = torch.device(args.device)
-
-    # Validate that either parameter_metadata or processing_weights is provided
-    if args.parameter_metadata is None and args.processing_weights is None:
-        raise ValueError(
-            "Either --parameter-metadata or --processing-weights must be provided. "
-            "Use --parameter-metadata for ground truth (recommended) or --processing-weights for CNN-based training."
-        )
-
-    transforms = create_transforms(args)
-    dataset = BrainwaveProcessingDataset(
-        args.dataset,
-        transform=transforms,
-        expected_channels=args.expected_channels,
-        expected_samples=args.expected_samples,
-        parameter_metadata=args.parameter_metadata,
-        processing_weights=args.processing_weights,
-        processing_device=args.device,
-    )
-    parameter_dim = dataset.parameter_size()
-
-    train_loader, val_loader = build_dataloaders(
-        dataset,
-        validation_split=args.validation_split,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-    )
-
-    example_features, _ = dataset[0]
-    input_shape = (example_features.shape[0], example_features.shape[1])
-
-    model = create_model(
-        input_shape=input_shape,
-        parameter_dim=parameter_dim,
-        hidden_channels=args.hidden_channels,
-        num_blocks=args.num_blocks,
-        dropout=args.dropout,
-    )
-    model.to(device)
-
-    criterion = nn.SmoothL1Loss()
-    optimiser = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
-
-    best_val_loss = float("inf")
-
-    for epoch in range(1, args.epochs + 1):
-        model.train()
-        epoch_loss = 0.0
-        epoch_samples = 0
-
-        for features, targets in train_loader:
-            features = features.to(device)
-            targets = targets.to(device)
-            optimiser.zero_grad()
-
-            with torch.cuda.amp.autocast(enabled=args.amp):
-                outputs = model(features)
-                loss = criterion(outputs, targets)
-
-            scaler.scale(loss).backward()
-            if args.grad_clip > 0:
-                scaler.unscale_(optimiser)
-                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-
-            scaler.step(optimiser)
-            scaler.update()
-
-            batch_size = features.size(0)
-            epoch_loss += loss.item() * batch_size
-            epoch_samples += batch_size
-
-        epoch_loss /= max(epoch_samples, 1)
-
-        log_message = {
-            "epoch": epoch,
-            "train_loss": epoch_loss,
-        }
-
-        if val_loader is not None:
-            val_loss = evaluate(model, val_loader, criterion, device)
-            log_message["val_loss"] = val_loss
-            is_best = val_loss < best_val_loss
-            best_val_loss = min(best_val_loss, val_loss)
-        else:
-            val_loss = None
-            is_best = False
-
-        save_checkpoint(
-            {
-                "epoch": epoch,
-                "model_state": model.state_dict(),
-                "optimiser_state": optimiser.state_dict(),
-                "scaler_state": scaler.state_dict(),
-                "train_loss": epoch_loss,
-                "val_loss": val_loss,
-                "parameter_names": dataset.parameter_names,
-            },
-            args.output_dir,
-            epoch,
-            is_best=is_best,
-        )
-
-        print(json.dumps(log_message))
-
-    print("Training complete.")
+    with open(args.output_dir / "history.json", "w", encoding="utf8") as handle:
+        json.dump(history.to_dict(), handle, indent=2)
+    print(f"Saved the model for {len(names)} parameters to {path}")
+    print(json.dumps(history.to_dict()["metrics"]))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    sys.exit(main())
